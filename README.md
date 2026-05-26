@@ -9,17 +9,29 @@ A Spelling-Bee-style daily Russian puzzle. The central design move is **lemma-le
 ## Layout
 
 ```
-backend/         Python (uv-managed, Python 3.12). pymorphy3 + FastAPI.
-  src/rsb/       Library modules (alphabet, dictionary, lemmatizer, generator, scoring, store, overrides, api).
-  scripts/       build_dictionary.py — fetches L–S frequency list and compiles the lemma table.
-  tests/         pytest. 44 passing.
-  data/          stub_lemmas.tsv (checked in), overrides.yaml (checked in), rsb.db (gitignored — generated).
+Dockerfile          Multi-stage (Node build → Python runtime) for the bundled HF Space.
+.dockerignore
 
-frontend/        Svelte 5 + Vite + TypeScript. Single-page app.
-  src/lib/       Components and the GameState singleton.
+backend/            Python (uv-managed, Python 3.12). pymorphy3 + FastAPI.
+  src/rsb/          Library modules (alphabet, dictionary, lemmatizer, generator,
+                    scoring, store, state_store, overrides, api).
+  scripts/          build_dictionary.py — fetches L–S frequency list and compiles
+                    the lemma table.
+  tests/            pytest. 47 passing.
+  data/             stub_lemmas.tsv (checked in), overrides.yaml (checked in),
+                    rsb.db (gitignored — generated).
 
-docs/            Reference material.
-  original-design.md   Frozen copy of the planning doc.
+frontend/           Svelte 5 + Vite + TypeScript. Single-page app.
+  src/lib/          Components and the GameState singleton.
+
+scripts/
+  deploy_hf.sh      One-command redeploy to the HF Space.
+
+docs/
+  deploy-huggingface.md  Deploy notes (Space, secrets, Turso).
+  space.README.md   HF-flavored README copied to the Space root at deploy time.
+  original-design.md     Frozen copy of the planning doc.
+  benchmarks/
 
 STATUS.md        ← Canonical "what's live on this branch."
 todo.md          ← Canonical task list.
@@ -38,7 +50,7 @@ cd backend
 uv sync                                      # first time only
 uv run python scripts/build_dictionary.py    # one-time: fetches L–S, compiles ~42k lemmas into SQLite (~30s)
 uv run uvicorn rsb.api:app --reload          # dev server on :8000
-uv run pytest                                # 44 tests
+uv run pytest                                # 47 tests
 ```
 
 If `build_dictionary.py` hasn't been run yet, the API falls back to the small hand-curated stub at `backend/data/stub_lemmas.tsv`. The auto-generated puzzles will be tiny but the play loop works.
@@ -67,17 +79,34 @@ These bit me during development; flagged here so you don't pay for them again.
 
 ## API at a glance
 
+All routes are namespaced under `/api`:
+
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET  | `/puzzle/current`        |  | current puzzle |
-| GET  | `/puzzle/{id}`           |  | a specific stored puzzle |
-| POST | `/puzzle/{id}/guess`     | `{form, found_lemmas}` | `{status, lemma?, points?, is_pangram?, candidates}` |
-| POST | `/admin/generate`        | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | a new stored puzzle |
+| GET  | `/api/health`                |  | `{status, state_store}` |
+| GET  | `/api/puzzle/current`        |  | current puzzle |
+| GET  | `/api/puzzle/{id}`           |  | a specific stored puzzle |
+| POST | `/api/puzzle/{id}/guess`     | `{form, found_lemmas}` | `{status, lemma?, points?, is_pangram?, candidates}` |
+| POST | `/api/admin/generate`        | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | a new stored puzzle |
 
-`status` ∈ {`accepted`, `already_found`, `not_in_set`, `unparseable`}. The frontend talks to all of these via the Vite `/api` proxy.
+`status` ∈ {`accepted`, `already_found`, `not_in_set`, `unparseable`}. The frontend talks to all of these via the Vite `/api` proxy in dev, and directly (same origin) in production.
+
+---
+
+## Deploy
+
+Live at https://ajgazin-russian-spelling-bee.hf.space — a Hugging Face Space (Docker SDK) that bundles the Svelte SPA and FastAPI backend in a single image. Generated puzzles persist to a [Turso](https://turso.tech) libsql DB across Space restarts.
+
+One-command redeploy from repo root:
+
+```sh
+scripts/deploy_hf.sh
+```
+
+Full notes: [`docs/deploy-huggingface.md`](docs/deploy-huggingface.md).
 
 ---
 
 ## Scope reminder
 
-The current build is **single-player, local-dev only**. All multi-player / family / daily-rollover / hosting work is explicitly out of scope and lives in the `todo.md` "Future / deferred" section. The focus is "puzzle works well in a flexible code ecosystem"; bells and whistles come after.
+Single-player today. Multi-player / family / daily-rollover features are still out of scope and live in the `todo.md` "Future / deferred" section.

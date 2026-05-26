@@ -9,6 +9,10 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pyyaml>=6.0",
+    # Turso/libsql client. Used by state_store.TursoStateStore when
+    # TURSO_DATABASE_URL+TURSO_AUTH_TOKEN are set. Harmless to install
+    # otherwise — it just sits unused.
+    "libsql>=0.1",
 ]
 
 [dependency-groups]

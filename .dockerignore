@@ -1,0 +1,37 @@
+# Build-context exclusions for the bundled HF Space deploy.
+# Mirrors .gitignore plus a few build-time-only paths.
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.venv/
+**/.uv-cache/
+
+# Node
+**/node_modules/
+**/dist/
+**/.svelte-kit/
+**/.vite/
+
+# Backend generated / cached state
+backend/data/sources/
+backend/data/compiled/
+backend/data/rsb.db
+backend/data/rsb.db-*
+backend/data/rsb_state.db*
+
+# Tests aren't needed in the runtime image.
+backend/tests/
+
+# Secrets
+.env
+.env.*
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

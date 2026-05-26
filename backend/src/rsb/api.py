@@ -1,13 +1,18 @@
-"""FastAPI app exposing the puzzle and the guess endpoint.
+"""FastAPI app exposing the puzzle API and (in deployed builds) the static SPA.
 
-Endpoints:
-  GET  /puzzle/current             → the most recent puzzle (auto-generated
-                                     on first request if the DB is empty).
-  GET  /puzzle/{puzzle_id}         → a specific puzzle.
-  POST /puzzle/{puzzle_id}/guess   → resolve a typed form against the puzzle.
-  POST /admin/generate             → generate a new puzzle and store it.
+API endpoints — all under `/api`:
+  GET  /api/puzzle/current             → the most recent puzzle (auto-generated
+                                          on first request if the DB is empty).
+  GET  /api/puzzle/{puzzle_id}         → a specific puzzle.
+  POST /api/puzzle/{puzzle_id}/guess   → resolve a typed form against the puzzle.
+  POST /api/admin/generate             → generate a new puzzle and store it.
+  GET  /api/health                     → liveness probe (for HF health checks).
 
-Frontend talks to /api/* via Vite's dev proxy.
+Static SPA — when `./static/` exists (built `frontend/dist/` copied into the
+Docker image at build time), it's mounted at `/`. `/docs`, `/openapi.json`,
+and `/api/*` resolve first, so the SPA only catches the rest. In local dev
+the static dir is absent and `/` simply 404s; use Vite (`npm run dev` at
+:5173) which proxies `/api` to this server at :8000.
 
 The /guess response uses one of four statuses:
   - "accepted"      with lemma + points + is_pangram
@@ -28,8 +33,9 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .dictionary import Dictionary
@@ -37,6 +43,7 @@ from .generator import GeneratorConfig, NoPuzzleFound, Puzzle, generate
 from .lemmatizer import Lemmatizer
 from .overrides import apply_to_dictionary, load as load_overrides
 from . import store
+from . import state_store as state_store_mod
 
 
 # ---------- paths -----------------------------------------------------------
@@ -52,6 +59,7 @@ DEFAULT_OVERRIDES = BACKEND_ROOT / "data" / "overrides.yaml"
 class State:
     def __init__(self) -> None:
         self.db = None
+        self.state_store: state_store_mod.StateStore | None = None
         self.dictionary: Dictionary | None = None
         self.lemmatizer: Lemmatizer | None = None
         self.generator_cfg = _DEFAULT_STUB_CFG  # overwritten in lifespan once dict source is known
@@ -112,15 +120,21 @@ async def lifespan(_app: FastAPI):
 
     _state.lemmatizer = Lemmatizer()
 
-    # Auto-generate a starter puzzle if the DB is empty, so the UI has
+    # Mutable game state (puzzles, future scores). Picks Turso if
+    # TURSO_DATABASE_URL+TURSO_AUTH_TOKEN are set; otherwise local SQLite.
+    _state.state_store = state_store_mod.open_state_store()
+    log.info("state store backend: %s", _state.state_store.backend)
+
+    # Auto-generate a starter puzzle if state is empty, so the UI has
     # something to render on first run.
-    if store.count_puzzles(_state.db) == 0:
+    if _state.state_store.count_puzzles() == 0:
         try:
             p = generate(_state.dictionary, _state.generator_cfg)
-            store.save_puzzle(_state.db, p)
+            _state.state_store.save_puzzle(p)
         except NoPuzzleFound:
             pass
     yield
+    _state.state_store.close()
     _state.db.close()
 
 
@@ -195,25 +209,36 @@ def _puzzle_to_response(pid: int, p: Puzzle) -> PuzzleResponse:
 
 # ---------- routes ----------------------------------------------------------
 
-@app.get("/puzzle/current", response_model=PuzzleResponse)
+api = APIRouter(prefix="/api")
+
+
+@api.get("/health")
+def health() -> dict[str, str]:
+    """Liveness probe. HF Spaces' default health check pings `/` (which the SPA
+    answers); this gives an explicit API-side probe for monitoring."""
+    backend = _state.state_store.backend if _state.state_store else "uninitialized"
+    return {"status": "ok", "state_store": backend}
+
+
+@api.get("/puzzle/current", response_model=PuzzleResponse)
 def get_current() -> PuzzleResponse:
-    pair = store.get_current_puzzle(_state.db)
+    pair = _state.state_store.get_current_puzzle()
     if pair is None:
-        raise HTTPException(status_code=404, detail="No puzzle yet — POST /admin/generate")
+        raise HTTPException(status_code=404, detail="No puzzle yet — POST /api/admin/generate")
     return _puzzle_to_response(*pair)
 
 
-@app.get("/puzzle/{puzzle_id}", response_model=PuzzleResponse)
+@api.get("/puzzle/{puzzle_id}", response_model=PuzzleResponse)
 def get_one(puzzle_id: int) -> PuzzleResponse:
-    pair = store.get_puzzle(_state.db, puzzle_id)
+    pair = _state.state_store.get_puzzle(puzzle_id)
     if pair is None:
         raise HTTPException(status_code=404, detail=f"No puzzle with id {puzzle_id}")
     return _puzzle_to_response(*pair)
 
 
-@app.post("/puzzle/{puzzle_id}/guess", response_model=GuessResponse)
+@api.post("/puzzle/{puzzle_id}/guess", response_model=GuessResponse)
 def guess(puzzle_id: int, req: GuessRequest) -> GuessResponse:
-    pair = store.get_puzzle(_state.db, puzzle_id)
+    pair = _state.state_store.get_puzzle(puzzle_id)
     if pair is None:
         raise HTTPException(status_code=404, detail=f"No puzzle with id {puzzle_id}")
     _, puzzle = pair
@@ -244,7 +269,7 @@ def guess(puzzle_id: int, req: GuessRequest) -> GuessResponse:
     return GuessResponse(status="unparseable")
 
 
-@app.post("/admin/generate", response_model=PuzzleResponse)
+@api.post("/admin/generate", response_model=PuzzleResponse)
 def admin_generate(req: GenerateRequest | None = None) -> PuzzleResponse:
     cfg = _state.generator_cfg
     if req is not None:
@@ -273,5 +298,22 @@ def admin_generate(req: GenerateRequest | None = None) -> PuzzleResponse:
         p = generate(_state.dictionary, cfg)
     except NoPuzzleFound as e:
         raise HTTPException(status_code=503, detail=str(e))
-    pid = store.save_puzzle(_state.db, p)
+    pid = _state.state_store.save_puzzle(p)
     return _puzzle_to_response(pid, p)
+
+
+app.include_router(api)
+
+
+# ---------- static frontend -------------------------------------------------
+# In the production image, the Dockerfile copies the built Svelte SPA to
+# ./static (relative to this module's parents[2] — i.e. /home/user/app/static
+# in the container). In local dev that directory is absent; we mount it only
+# when present so the API is still runnable standalone.
+#
+# IMPORTANT: this mount must come AFTER include_router and after FastAPI's
+# auto-routes (/docs, /openapi.json). StaticFiles at "/" otherwise shadows them.
+
+_STATIC_DIR = BACKEND_ROOT / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="spa")

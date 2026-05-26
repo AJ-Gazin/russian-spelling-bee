@@ -2,7 +2,7 @@
 
 **This file is the canonical description of what is actually live on this branch.** When behavior changes, update this file in the same change. Stale `STATUS.md` is a bug. The original planning document at [`docs/original-design.md`](docs/original-design.md) is preserved as a frozen reference; where the two diverge, `STATUS.md` wins. The active work queue is [`todo.md`](todo.md). Empirical numbers per generation strategy live in [`docs/benchmarks/`](docs/benchmarks/README.md) — run `backend/scripts/sample_puzzles.py` to add a new entry whenever a generation/selection strategy changes.
 
-> **Last meaningful update:** **form-level fitness rule** for puzzle membership — a lemma now belongs in a puzzle if any of its *inflected forms* fits the hive (subset of letters, contains center), not only the citation form. This eliminates the "letters are right there but it doesn't count" trap (e.g. *сеть* in a hive with с, е, т, и but no ь — *сети* fits, so *сеть* is on the answer list). Pangrams still require the lemma's citation form to be the pangram, so advertised pangrams remain recognizable. Schema bumped to v2; existing DBs auto-migrate on first startup (~7s for 41k lemmas). Next planned focus: **UI/UX audit & polish** (separate session).
+> **Last meaningful update:** **Bundled deploy to a Hugging Face Space with Turso state store.** Live at https://ajgazin-russian-spelling-bee.hf.space. Multi-stage Dockerfile (Node build → Python runtime) sits at repo root; the Svelte SPA is served at `/`, the FastAPI backend at `/api/*`. Puzzle state moved out of `store.py` (now lemma-only) into a new `state_store.py` with two implementations: local SQLite for dev, [Turso](https://turso.tech) libsql for production — picked at startup by env vars. `scripts/deploy_hf.sh` is the one-command redeploy. Previous focus carried forward: **UI/UX audit & polish** (separate session).
 
 ---
 
@@ -20,9 +20,11 @@
 | Overrides | live; YAML include/exclude/aliases; 27 seeded excludes; aliases loaded but unused | `backend/src/rsb/overrides.py`, `backend/data/overrides.yaml` |
 | Scoring + ranks | live; planning-doc table | `backend/src/rsb/scoring.py` |
 | Puzzle generator | live; constraint-checked; deterministic under seed; `top_n` difficulty knob; **form-level fitness** | `backend/src/rsb/generator.py` |
-| SQLite store | live; `puzzles` and `lemmas` tables (schema v2 with `form_masks`) | `backend/src/rsb/store.py` |
-| FastAPI server | live; 4 endpoints; auto-generates first puzzle | `backend/src/rsb/api.py` |
+| Lemma store (SQLite, read-only at runtime) | live; `lemmas` table (schema v2 with `form_masks`) — baked into the Docker image | `backend/src/rsb/store.py` |
+| State store (puzzles; future: scores) | live; Protocol with two impls (`LocalSqliteStateStore` for dev, `TursoStateStore` for prod) selected by env vars | `backend/src/rsb/state_store.py` |
+| FastAPI server | live; 5 endpoints under `/api`; serves the built Svelte SPA at `/` when `./static/` exists | `backend/src/rsb/api.py` |
 | Svelte 5 frontend | live; full play loop in browser; difficulty selector | `frontend/src/` |
+| HF Space deploy | live at https://ajgazin-russian-spelling-bee.hf.space; multi-stage Dockerfile; `scripts/deploy_hf.sh` for one-command redeploy | `Dockerfile`, `scripts/deploy_hf.sh`, `docs/deploy-huggingface.md` |
 | Tests | 47 passing | `backend/tests/*.py` |
 | UX polish (final pass) | **partial — see "Open UX work" below** | `frontend/src/lib/*.svelte` |
 
@@ -167,14 +169,15 @@ Selection persists in the chip.
 
 ## API surface
 
-Implemented in `backend/src/rsb/api.py` (FastAPI). All paths live at `http://localhost:8000` (dev) or `/api` via the Vite proxy.
+Implemented in `backend/src/rsb/api.py` (FastAPI). All routes are mounted on an `APIRouter(prefix="/api")`, so paths are `/api/puzzle/...` in both dev (via the Vite proxy) and production (same-origin under the bundled HF Space). When `./static/` exists in the working dir (production build), the Svelte SPA is mounted at `/` after the router and FastAPI's auto-routes resolve.
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| GET | `/puzzle/current` | — | Auto-generates one on first boot if the table is empty. |
-| GET | `/puzzle/{id}` | — | 404 if not found. |
-| POST | `/puzzle/{id}/guess` | `{form, found_lemmas}` | Returns `{status, lemma?, points?, is_pangram?, candidates}`. |
-| POST | `/admin/generate` | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | All fields optional; empty body uses server defaults. |
+| GET | `/api/health` | — | `{status, state_store}`. Liveness + which state backend booted (`local-sqlite` vs `turso`). |
+| GET | `/api/puzzle/current` | — | Auto-generates one on first boot if the state store is empty. |
+| GET | `/api/puzzle/{id}` | — | 404 if not found. |
+| POST | `/api/puzzle/{id}/guess` | `{form, found_lemmas}` | Returns `{status, lemma?, points?, is_pangram?, candidates}`. |
+| POST | `/api/admin/generate` | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | All fields optional; empty body uses server defaults. |
 
 `status` ∈ {`accepted`, `already_found`, `not_in_set`, `unparseable`}. Server-side per-player state is deferred; the client passes `found_lemmas` on every guess.
 
@@ -197,7 +200,32 @@ Svelte 5 + Vite + TypeScript single-page app under `frontend/`. Uses Svelte 5 ru
 | `lib/api.ts` | Typed fetch wrappers for the 4 endpoints. |
 | `lib/persist.ts` | Per-puzzle localStorage keyed by puzzle id (interim — server-side state is deferred). |
 
-Vite proxies `/api/*` to `http://localhost:8000`. Run `npm run dev` in `frontend/` after starting `uv run uvicorn rsb.api:app` in `backend/`.
+Vite proxies `/api/*` to `http://localhost:8000` (path preserved — the backend mounts its router at `/api`, so dev and prod paths match). Run `npm run dev` in `frontend/` after starting `uv run uvicorn rsb.api:app` in `backend/`.
+
+---
+
+## Deploy + state persistence
+
+**Live:** https://ajgazin-russian-spelling-bee.hf.space
+
+The Space is a single Docker image bundling the Svelte SPA and FastAPI backend (see `Dockerfile` at repo root). Multi-stage build:
+
+1. `node:20-slim` runs `npm ci && npm run build` on `frontend/` → `/build/dist`.
+2. `python:3.12-slim` installs backend deps via uv, runs `scripts/build_dictionary.py` to bake the ~42k lemma SQLite into the image, then copies the SPA's `dist/` into `./static/`.
+3. uvicorn binds `0.0.0.0:7860` (HF Spaces default).
+
+**State store selection happens at startup** in `state_store.open_state_store()`:
+
+| Env var present | Backend chosen | Notes |
+|---|---|---|
+| `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` | `TursoStateStore` (libsql) | Production. Durable across Space restarts/rebuilds. |
+| Neither | `LocalSqliteStateStore` at `data/rsb_state.db` (or `$RSB_STATE_DB`) | Dev default. Ephemeral on Spaces. |
+
+The lemma table is a separate concern — read-only, baked into the image, lives in `backend/data/rsb.db`.
+
+**Redeploy:** `scripts/deploy_hf.sh` from repo root. It stages a clean tree in `/tmp`, swaps in the HF-flavored `docs/space.README.md` as the Space's `README.md`, and `hf upload`s. (Staging is necessary because `hf upload` chokes on a CWD containing `.venv`.)
+
+Full notes including provisioning + secret rotation: [`docs/deploy-huggingface.md`](docs/deploy-huggingface.md).
 
 ---
 
@@ -208,7 +236,7 @@ See `todo.md` "Future / deferred" for the full list. Headline items:
 - Daily-puzzle rollover + timezone choice
 - Yesterday's puzzle viewer, end-of-day missed-words review, "сохранить слово"
 - Hints grid, "редкое слово" badge, single-reveal grace mechanic
-- Hosting / deployment
+- Per-player scoreboard rows in the existing `scores` table (schema ready in `state_store.py`)
 
 ---
 

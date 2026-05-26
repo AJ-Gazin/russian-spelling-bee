@@ -1,5 +1,9 @@
 /**
- * Thin client for the backend. The Vite dev server proxies /api/* to :8000.
+ * Thin client for the backend. All routes live under /api/*.
+ *
+ * In dev: Vite proxies /api/* to http://localhost:8000 (path preserved).
+ * In prod (HF Space): the SPA and the API share the same origin, so /api/*
+ * resolves to the FastAPI router directly.
  *
  * Shapes mirror backend/src/rsb/api.py — keep them in sync. When the backend
  * shape changes, update both this file and STATUS.md.
@@ -47,8 +51,9 @@ export interface GuessResponse {
 const BASE = "/api";
 
 export async function fetchCurrentPuzzle(): Promise<Puzzle> {
-  const r = await fetch(`${BASE}/puzzle/current`);
-  if (!r.ok) throw new Error(`GET /puzzle/current → ${r.status}`);
+  const url = `${BASE}/puzzle/current`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`GET ${url} → ${r.status}`);
   return (await r.json()) as Puzzle;
 }
 
@@ -64,12 +69,13 @@ export async function generateNewPuzzle(opts: GenerateOptions = {}): Promise<Puz
   const body = Object.fromEntries(
     Object.entries(opts).filter(([, v]) => v !== undefined && v !== null),
   );
-  const r = await fetch(`${BASE}/admin/generate`, {
+  const url = `${BASE}/admin/generate`;
+  const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`POST /admin/generate → ${r.status}`);
+  if (!r.ok) throw new Error(`POST ${url} → ${r.status}`);
   return (await r.json()) as Puzzle;
 }
 
@@ -78,11 +84,12 @@ export async function submitGuess(
   form: string,
   foundLemmas: string[],
 ): Promise<GuessResponse> {
-  const r = await fetch(`${BASE}/puzzle/${puzzleId}/guess`, {
+  const url = `${BASE}/puzzle/${puzzleId}/guess`;
+  const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ form, found_lemmas: foundLemmas }),
   });
-  if (!r.ok) throw new Error(`POST /guess → ${r.status}`);
+  if (!r.ok) throw new Error(`POST ${url} → ${r.status}`);
   return (await r.json()) as GuessResponse;
 }

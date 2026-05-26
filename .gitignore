@@ -34,3 +34,12 @@ Thumbs.db
 
 # Claude Code per-machine state
 .claude/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+# Local-state SQLite (mirrors Turso content in dev)
+backend/data/rsb_state.db
+backend/data/rsb_state.db-shm
+backend/data/rsb_state.db-wal

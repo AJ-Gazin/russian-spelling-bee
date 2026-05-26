@@ -66,11 +66,12 @@ A reasonable approach: write a folding script that walks the lemma table, propos
 - [x] `lemmatizer.py` — pymorphy3 wrapper, ambiguity rule, lemma-resolution lookup
 - [x] `scoring.py` — length-based points, +7 pangram bonus, rank thresholds
 - [x] `generator.py` — weighted letter sampling, candidate enumeration, constraint enforcement, deterministic under seed
-- [x] Unit tests for each module — **44 passing**
+- [x] Unit tests for each module — **47 passing**
 
 ### API + UI
-- [x] `store.py` — SQLite layer (`puzzles` + `lemmas` tables)
-- [x] `api.py` — FastAPI with `GET /puzzle/current`, `GET /puzzle/{id}`, `POST /puzzle/{id}/guess`, `POST /admin/generate`
+- [x] `store.py` — SQLite layer for the read-only `lemmas` table (puzzle CRUD lives in `state_store.py`)
+- [x] `state_store.py` — Protocol with `LocalSqliteStateStore` + `TursoStateStore` implementations; picks via env vars
+- [x] `api.py` — FastAPI with `GET /api/puzzle/current`, `GET /api/puzzle/{id}`, `POST /api/puzzle/{id}/guess`, `POST /api/admin/generate`, `GET /api/health`
 - [x] Four API statuses surfaced: `accepted`, `already_found`, `not_in_set`, `unparseable`
 - [x] API tests (6, all passing)
 - [x] Svelte components: `Hive`, `Input`, `FoundList`, `RankBar`, `Toast`, `NewGame`
@@ -124,7 +125,10 @@ Everything below is **out of scope for the current build** but worth preserving 
 - [-] Single "show me one word I missed" reveal per day
 
 ### Hosting / ops
-- [-] Decide deployment target (LAN box, Pi, Cloudflare Pages+Worker, public host)
+- [x] Decide deployment target — bundled Docker Space on Hugging Face (free CPU tier)
+- [x] Persist generated puzzles across restarts — Turso libsql via `state_store.py`
+- [x] One-command redeploy (`scripts/deploy_hf.sh`)
+- [ ] Tighten `allow_origins` in `api.py` from `["*"]` to the Space's known origin
 - [-] Weekly puzzle pre-generation cron
 - [-] Light editorial pass workflow (review queued puzzles before they go live)
 
