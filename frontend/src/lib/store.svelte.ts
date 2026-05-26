@@ -25,12 +25,26 @@ export interface Toast {
   seq: number;
 }
 
+// Inline rejection feedback rendered next to the input — replaces the
+// previous top-of-viewport toast for rejection cases so users can actually
+// read the reason without time pressure.
+export type FeedbackKind = "already_found" | "not_in_set" | "unparseable";
+
+export interface Feedback {
+  kind: FeedbackKind;
+  form: string;
+  lemma?: string;
+  candidates?: string[];
+  seq: number;
+}
+
 class GameState {
   puzzle = $state<Puzzle | null>(null);
   found = $state<string[]>([]);
   loading = $state<boolean>(false);
   error = $state<string | null>(null);
   toast = $state<Toast | null>(null);
+  feedback = $state<Feedback | null>(null);
 
   // Derived: total points scored.
   score = $derived(this.computeScore());
@@ -40,6 +54,7 @@ class GameState {
   toNext = $derived(this.computeToNext());
 
   #toastSeq = 0;
+  #feedbackSeq = 0;
 
   private computeScore(): number {
     if (!this.puzzle) return 0;
@@ -79,6 +94,14 @@ class GameState {
     this.toast = { ...t, seq: ++this.#toastSeq };
   }
 
+  showFeedback(f: Omit<Feedback, "seq">): void {
+    this.feedback = { ...f, seq: ++this.#feedbackSeq };
+  }
+
+  clearFeedback(): void {
+    this.feedback = null;
+  }
+
   async guess(form: string): Promise<void> {
     if (!this.puzzle) return;
     const trimmed = form.trim().toLowerCase();
@@ -101,6 +124,8 @@ class GameState {
           this.found = [...this.found, lemma];
           if (this.puzzle) saveFound(this.puzzle.id, this.found);
         }
+        // A successful guess supersedes any lingering rejection feedback.
+        this.clearFeedback();
         this.showToast({
           kind: "accepted",
           message: res.is_pangram ? "Панграмма!" : "Зачтено",
@@ -112,22 +137,23 @@ class GameState {
         return;
       }
       case "already_found":
-        this.showToast({
+        this.showFeedback({
           kind: "already_found",
-          message: `Уже найдено: ${res.lemma ?? form}`,
+          form,
           lemma: res.lemma ?? undefined,
         });
         return;
       case "not_in_set":
-        this.showToast({
+        this.showFeedback({
           kind: "not_in_set",
-          message: "Такого слова нет в сегодняшнем наборе",
+          form,
+          candidates: res.candidates,
         });
         return;
       case "unparseable":
-        this.showToast({
+        this.showFeedback({
           kind: "unparseable",
-          message: "Неверная форма",
+          form,
         });
         return;
     }

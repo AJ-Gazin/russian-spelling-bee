@@ -1,5 +1,8 @@
 <script lang="ts">
   import { game } from "./store.svelte";
+  import AnswersModal from "./AnswersModal.svelte";
+
+  let showAnswers = $state(false);
 
   let pangramSet = $derived(
     new Set((game.puzzle?.lemmas ?? []).filter((l) => l.is_pangram).map((l) => l.lemma)),
@@ -42,10 +45,21 @@
 <section class="found">
   <header class="fl-head">
     <h2 class="fl-title">Найдено</h2>
-    <div class="fl-stats">
-      <span class="fl-count">{count}</span>
-      <span class="fl-of">/&nbsp;{total}</span>
-      <span class="fl-pct">{pct}%</span>
+    <div class="fl-head-right">
+      <div class="fl-stats">
+        <span class="fl-count">{count}</span>
+        <span class="fl-of">/&nbsp;{total}</span>
+        <span class="fl-pct">{pct}%</span>
+      </div>
+      <button
+        class="fl-answers"
+        onclick={() => (showAnswers = true)}
+        title="Показать все ответы"
+        aria-label="Показать ответы"
+      >
+        <span class="fl-answers-eyebrow">Подсмотр</span>
+        <span class="fl-answers-label">Ответы</span>
+      </button>
     </div>
   </header>
 
@@ -98,6 +112,8 @@
   </div>
 </section>
 
+<AnswersModal open={showAnswers} onClose={() => (showAnswers = false)} />
+
 <style>
   .found {
     background: var(--paper);
@@ -132,12 +148,55 @@
     color: var(--ink);
     letter-spacing: 0.01em;
   }
+  .fl-head-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
   .fl-stats {
     display: flex;
     align-items: baseline;
     gap: 0.4rem;
     font-family: var(--mono);
     font-variant-numeric: tabular-nums;
+  }
+  .fl-answers {
+    background: var(--paper-warm);
+    border: 1px solid var(--ink);
+    border-radius: 0;
+    color: var(--ink);
+    font-family: inherit;
+    text-align: left;
+    padding: 0.35rem 0.6rem;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+    box-shadow: 2px 2px 0 var(--shadow-card-ink);
+    transition:
+      transform 0.08s var(--ease-out),
+      box-shadow 0.08s var(--ease-out),
+      background 0.15s ease;
+  }
+  .fl-answers:hover { background: var(--paper-deep); }
+  .fl-answers:active {
+    transform: translate(2px, 2px);
+    box-shadow: 0 0 0 var(--shadow-card-ink);
+  }
+  .fl-answers-eyebrow {
+    font-family: var(--mono);
+    font-size: 0.5rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    line-height: 1;
+  }
+  .fl-answers-label {
+    font-family: var(--display);
+    font-size: 0.95rem;
+    line-height: 1;
+    color: var(--red);
+    letter-spacing: 0.01em;
   }
   .fl-count {
     font-family: var(--display);

@@ -38,6 +38,12 @@
     }
   }
 
+  function onInput() {
+    // Any user-initiated edit means the player has acknowledged the previous
+    // rejection and is starting a new attempt — clear the inline feedback.
+    if (game.feedback) game.clearFeedback();
+  }
+
   async function submit() {
     if (!value.trim()) return;
     if (hasInvalid) {
@@ -70,9 +76,32 @@
     game.puzzle = { ...game.puzzle, letters: center + outer.join("") };
   }
 
+  // Spacebar shuffles the hive (mirrors NYT Spelling Bee). The listener is
+  // window-level so it works whether the input has focus or not, but it
+  // backs off when focus is on an interactive control so normal keyboard
+  // activation of buttons/links still works.
+  $effect(() => {
+    function onSpaceShuffle(e: KeyboardEvent) {
+      if (e.key !== " " && e.code !== "Space") return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as Element | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "BUTTON" || tag === "A" || tag === "TEXTAREA") return;
+        // Other text inputs (not the puzzle input) should keep typing spaces.
+        if (tag === "INPUT" && !t.classList.contains("real-input")) return;
+      }
+      e.preventDefault();
+      shuffle();
+    }
+    window.addEventListener("keydown", onSpaceShuffle);
+    return () => window.removeEventListener("keydown", onSpaceShuffle);
+  });
+
   // Tap-from-hive support.
   export function appendLetter(letter: string) {
     value = value + letter;
+    if (game.feedback) game.clearFeedback();
   }
 
   // Display: fold Ё→Е like the hive does.
@@ -99,6 +128,7 @@
     class="real-input"
     bind:value
     onkeydown={onKey}
+    oninput={onInput}
     autocomplete="off"
     autocapitalize="off"
     autocorrect="off"
@@ -107,19 +137,58 @@
     placeholder=""
   />
 
-  <div class="status-row" aria-live="polite">
-    {#if chars.length === 0}
-      <span class="hint">Нажимай&nbsp;соты&nbsp;или&nbsp;печатай — Ё&nbsp;входит&nbsp;в&nbsp;Е</span>
-    {:else if hasInvalid}
-      <span class="hint warn">Есть&nbsp;буквы&nbsp;вне&nbsp;набора</span>
-    {:else if allLegal}
-      <span class="hint ok">{chars.length}&nbsp;{chars.length === 1 ? "буква" : chars.length < 5 ? "буквы" : "букв"}&nbsp;·&nbsp;готов&nbsp;к&nbsp;вводу</span>
-    {/if}
-  </div>
+  {#if game.feedback}
+    {@const fb = game.feedback}
+    <div
+      class="feedback kind-{fb.kind}"
+      role="status"
+      aria-live="polite"
+      data-seq={fb.seq}
+    >
+      <span class="fb-mark" aria-hidden="true">
+        {#if fb.kind === "already_found"}↺
+        {:else if fb.kind === "not_in_set"}✗
+        {:else}?{/if}
+      </span>
+      <div class="fb-body">
+        <div class="fb-kicker">
+          {#if fb.kind === "already_found"}Уже&nbsp;найдено
+          {:else if fb.kind === "not_in_set"}Не&nbsp;в&nbsp;наборе
+          {:else}Нет&nbsp;формы{/if}
+        </div>
+        <div class="fb-detail">
+          {#if fb.kind === "already_found"}
+            <span class="fb-form">{fb.form}</span>
+            {#if fb.lemma && fb.lemma !== fb.form}
+              <span class="fb-arrow" aria-hidden="true">→</span>
+              <span class="fb-lemma">{fb.lemma}</span>
+            {/if}
+            <span class="fb-soft">— уже в списке</span>
+          {:else if fb.kind === "not_in_set"}
+            <span class="fb-form">{fb.form}</span>
+            <span class="fb-soft">— нет в сегодняшнем наборе</span>
+          {:else}
+            <span class="fb-form">{fb.form}</span>
+            <span class="fb-soft">— морфология не распознала форму</span>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {:else}
+    <div class="status-row" aria-live="polite">
+      {#if chars.length === 0}
+        <span class="hint">Нажимай&nbsp;соты&nbsp;или&nbsp;печатай — Ё&nbsp;входит&nbsp;в&nbsp;Е</span>
+      {:else if hasInvalid}
+        <span class="hint warn">Есть&nbsp;буквы&nbsp;вне&nbsp;набора</span>
+      {:else if allLegal}
+        <span class="hint ok">{chars.length}&nbsp;{chars.length === 1 ? "буква" : chars.length < 5 ? "буквы" : "букв"}&nbsp;·&nbsp;готов&nbsp;к&nbsp;вводу</span>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <div class="controls" role="toolbar" aria-label="Управление">
-  <button class="ctl" onclick={shuffle} title="Перемешать (Tab)" aria-label="Перемешать">
+  <button class="ctl" onclick={shuffle} title="Перемешать (Пробел)" aria-label="Перемешать">
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M16 3h5v5" />
       <path d="M4 20 21 3" />
@@ -267,6 +336,95 @@
   }
   .hint.warn { color: var(--red); }
   .hint.ok   { color: var(--green); }
+
+  /* Inline rejection feedback — sits where the status-row would, but with
+     more weight and no auto-dismiss. Cleared on the next keystroke. */
+  .feedback {
+    margin-top: 0.5rem;
+    display: grid;
+    grid-template-columns: 1.8rem 1fr;
+    gap: 0.65rem;
+    align-items: start;
+    padding: 0.55rem 0.75rem;
+    background: var(--paper-toast);
+    border: 1px solid var(--ink);
+    box-shadow: 2px 2px 0 var(--shadow-card-ink);
+    position: relative;
+    animation: fbIn 0.22s var(--ease-spring);
+  }
+  @keyframes fbIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .feedback::before {
+    /* Left color rail, mirrors the toast palette */
+    content: "";
+    position: absolute;
+    top: 0; bottom: 0; left: 0;
+    width: 4px;
+  }
+  .feedback.kind-not_in_set::before    { background: var(--red); }
+  .feedback.kind-unparseable::before   { background: var(--plum); }
+  .feedback.kind-already_found::before { background: var(--ink-mute); }
+
+  .fb-mark {
+    font-family: var(--display);
+    font-size: 1.6rem;
+    line-height: 1;
+    text-align: center;
+    padding-top: 0.1rem;
+    padding-left: 0.25rem;
+  }
+  .feedback.kind-not_in_set .fb-mark    { color: var(--red); }
+  .feedback.kind-unparseable .fb-mark   { color: var(--plum); }
+  .feedback.kind-already_found .fb-mark { color: var(--ink-mute); }
+
+  .fb-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+  .fb-kicker {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    line-height: 1;
+  }
+  .fb-detail {
+    font-family: var(--body);
+    font-size: 0.95rem;
+    color: var(--ink);
+    line-height: 1.3;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.3rem;
+  }
+  .fb-form {
+    font-family: var(--display);
+    font-size: 1.1rem;
+    color: var(--ink);
+    line-height: 1;
+  }
+  .feedback.kind-not_in_set .fb-form { color: var(--red); }
+  .fb-arrow {
+    font-family: var(--mono);
+    color: var(--ink-faint);
+    font-size: 0.9rem;
+  }
+  .fb-lemma {
+    font-family: var(--display);
+    font-size: 1.05rem;
+    color: var(--ink);
+  }
+  .fb-soft {
+    color: var(--ink-mute);
+    font-style: italic;
+    font-size: 0.88rem;
+  }
 
   /* ===== Controls ===== */
   .controls {
