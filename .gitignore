@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+.ruff_cache/
+
+# uv
+.uv-cache/
+
+# Node
+node_modules/
+dist/
+.svelte-kit/
+.vite/
+
+# Project data (generated / cached)
+backend/data/sources/
+backend/data/compiled/
+backend/data/rsb.db
+backend/data/*.db-journal
+backend/data/*.db-wal
+backend/data/*.db-shm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp

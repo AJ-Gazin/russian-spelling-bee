@@ -1,0 +1,53 @@
+# Manual overrides applied to the compiled dictionary.
+#
+# Three sections, all optional:
+#   include — force-add lemmas the build pipeline drops or doesn't see. Each
+#             entry is `{lemma, pos, freq_ipm}`. Use for household terms or
+#             items the freq list misses.
+#   exclude — drop lemmas the build pipeline kept but we don't want. Use a
+#             plain list of lemma strings.
+#   aliases — map a surface form directly to a lemma, bypassing pymorphy3.
+#             Use for words pymorphy3 mis-parses or for in-house variants.
+#             Each entry is `{form: lemma}`.
+#
+# Edit this file freely; re-run `uv run python scripts/build_dictionary.py`
+# to apply. Overrides are also re-applied on every API restart (so adding
+# an exclude doesn't require a full rebuild — the API filters at load time
+# too, for development speed).
+
+include: []
+
+# Seed list of diminutives / hypocoristics / household-y forms the L–S list
+# carries but the planning doc says to drop. Expand as we encounter more.
+exclude:
+  # Diminutives — кажется, что L–S labels these as plain nouns.
+  - садик       # сад
+  - кадка       # кадь
+  - кирка       # кирa (диалект)
+  - киска       # кошка / кот (хotz.)
+  - киса        # ditto
+  - котик       # кот
+  - котёнок     # young cat — productive diminutive
+  - домик       # дом
+  - домишко     # дом (augm/dim)
+  - домище      # дом (augm)
+  - столик      # стол
+  - стульчик    # стул
+  - окошко      # окно
+  - книжка      # книга
+  - ножик       # нож
+  - ручка       # рука (when meaning small hand / pen — leave for now, contested)
+  - ножка       # нога (диминутив)
+  - головка     # голова
+  - глазик      # глаз
+  - ушко        # ухо
+  - носик       # нос
+  - ротик       # рот
+  - песик       # пёс
+  - рассказик   # рассказ
+  - рассказец   # рассказ
+  - словечко    # слово
+  # Common slang / informal / questionably-included.
+  - рада        # really a short adjective ("рад"), not a noun
+
+aliases: {}

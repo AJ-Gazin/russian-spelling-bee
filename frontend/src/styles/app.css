@@ -1,0 +1,296 @@
+/* =========================================================================
+   Russian Spelling Bee — design system
+   Aesthetic: Soviet editorial / constructivist. Cream paper, oxblood red,
+   ink black, mustard gold accent. Yeseva One display, Spectral body,
+   JetBrains Mono for numerals.
+
+   Dark mode ([data-theme="dark"]): same broadside under the enlarger lamp.
+   Deep ink-brown canvas, parchment-cream type, the oxblood and gold stay
+   as accents but lifted a touch hotter for legibility on dark.
+   ========================================================================= */
+
+:root {
+  color-scheme: light;
+
+  /* Paper */
+  --paper:        #f1e8d4;
+  --paper-warm:   #ebe0c4;
+  --paper-deep:   #e3d6b3;
+  --paper-edge:   #c9b890;
+  --paper-toast:  #fbf6e7;
+
+  /* Ink */
+  --ink:          #161310;
+  --ink-soft:     #2a241d;
+  --ink-mute:     #5a4e3d;
+  --ink-faint:    #8c7d63;
+
+  /* Accent palette */
+  --red:          #8a1c1c;
+  --red-deep:     #631414;
+  --red-bright:   #b22a26;
+  --gold:         #d4a017;
+  --gold-deep:    #a87a0e;
+  --gold-soft:    #f0d76a;
+  --green:        #3d5a2a;
+  --plum:         #4a2a44;
+
+  /* Hive gradients — exposed as tokens so dark mode can re-shade them */
+  --hex-paper-1: #f4ecd6;
+  --hex-paper-2: #e1d2a8;
+  --hex-paper-press-1: #d4c393;
+  --hex-paper-press-2: #b9a574;
+  --hex-gold-1: #f1c849;
+  --hex-gold-2: #d4a017;
+  --hex-gold-3: #a87a0e;
+  --hex-gold-press-1: #b88a10;
+  --hex-gold-press-2: #8a6608;
+  --hex-stroke:        rgba(22, 19, 16, 0.18);
+  --hex-stroke-center: rgba(22, 19, 16, 0.35);
+
+  /* Atmospherics */
+  --grain-rgb-r: 0.08;
+  --grain-rgb-g: 0.07;
+  --grain-rgb-b: 0.06;
+  --grain-alpha: 0.06;
+  --grain-opacity: 0.55;
+  --grain-blend: multiply;
+  --vignette: rgba(60, 40, 20, 0.10);
+
+  /* Shadows */
+  --shadow-card-ink: var(--ink);
+  --shadow-card-red: var(--red);
+
+  /* On-accent tokens — colors that sit on top of fixed accents (red/gold).
+     These do NOT flip with theme because the accent color also doesn't flip. */
+  --on-red:  #f1e8d4;          /* cream, always readable on oxblood */
+  --on-gold: #14110c;          /* deep brown, always readable on mustard */
+  --on-ink-eyebrow: var(--gold-soft);  /* eyebrow on the dark CTA button */
+
+  /* Type */
+  --display:  "Yeseva One", "PT Serif", "Times New Roman", serif;
+  --body:     "Spectral", "PT Serif", Georgia, serif;
+  --mono:     "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Rhythm */
+  --gutter: clamp(1rem, 3vw, 2.5rem);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Paper → deep ink-brown canvas */
+  --paper:        #14110c;
+  --paper-warm:   #1d1812;
+  --paper-deep:   #281f17;
+  --paper-edge:   #4a3e2c;
+  --paper-toast:  #211b13;
+
+  /* Ink → warm parchment text */
+  --ink:          #ede2c8;
+  --ink-soft:     #d6c7a4;
+  --ink-mute:     #a59578;
+  --ink-faint:    #7a6c52;
+
+  /* Accents lift a touch — same hue, more luminance */
+  --red:          #d04848;
+  --red-deep:     #a93434;
+  --red-bright:   #e35d52;
+  --gold:         #e6b633;
+  --gold-deep:    #ab820f;
+  --gold-soft:    #f0d76a;
+  --green:        #82a866;
+  --plum:         #b8779e;
+
+  /* Hive gradients re-shaded as dark warm metal/wood */
+  --hex-paper-1: #3a2f20;
+  --hex-paper-2: #281e13;
+  --hex-paper-press-1: #4d3d2a;
+  --hex-paper-press-2: #382b1c;
+  --hex-gold-1: #f4cb52;
+  --hex-gold-2: #d4a017;
+  --hex-gold-3: #8a6608;
+  --hex-gold-press-1: #b48312;
+  --hex-gold-press-2: #6a4d06;
+  --hex-stroke:        rgba(255, 235, 200, 0.10);
+  --hex-stroke-center: rgba(20, 12, 4, 0.55);
+
+  /* Grain inverts to a faint highlight */
+  --grain-rgb-r: 0.95;
+  --grain-rgb-g: 0.88;
+  --grain-rgb-b: 0.72;
+  --grain-alpha: 0.05;
+  --grain-opacity: 0.5;
+  --grain-blend: screen;
+  --vignette: rgba(0, 0, 0, 0.55);
+
+  /* Shadow ink → keep dark; under the enlarger the shadows sit on top */
+  --shadow-card-ink: #000000;
+  --shadow-card-red: var(--red-deep);
+
+  /* On-accent stays the same — red and gold accents don't flip */
+  --on-red:  #f1e8d4;
+  --on-gold: #14110c;
+  /* Eyebrow on the inverted (now cream) CTA button → use red instead of yellow */
+  --on-ink-eyebrow: var(--red);
+
+  /* Lift gold-deep so pangram text reads on the dark canvas */
+  --gold-deep: #f0c548;
+}
+
+/* Respect OS dark preference on first paint, but ThemeToggle can override. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --paper:        #14110c;
+    --paper-warm:   #1d1812;
+    --paper-deep:   #281f17;
+    --paper-edge:   #4a3e2c;
+    --paper-toast:  #211b13;
+    --ink:          #ede2c8;
+    --ink-soft:     #d6c7a4;
+    --ink-mute:     #a59578;
+    --ink-faint:    #7a6c52;
+    --red:          #d04848;
+    --red-deep:     #a93434;
+    --red-bright:   #e35d52;
+    --gold:         #e6b633;
+    --gold-deep:    #ab820f;
+    --gold-soft:    #f0d76a;
+    --green:        #82a866;
+    --plum:         #b8779e;
+    --hex-paper-1: #3a2f20;
+    --hex-paper-2: #281e13;
+    --hex-paper-press-1: #4d3d2a;
+    --hex-paper-press-2: #382b1c;
+    --hex-gold-1: #f4cb52;
+    --hex-gold-2: #d4a017;
+    --hex-gold-3: #8a6608;
+    --hex-gold-press-1: #b48312;
+    --hex-gold-press-2: #6a4d06;
+    --hex-stroke:        rgba(255, 235, 200, 0.10);
+    --hex-stroke-center: rgba(20, 12, 4, 0.55);
+    --grain-rgb-r: 0.95;
+    --grain-rgb-g: 0.88;
+    --grain-rgb-b: 0.72;
+    --grain-alpha: 0.05;
+    --grain-opacity: 0.5;
+    --grain-blend: screen;
+    --vignette: rgba(0, 0, 0, 0.55);
+    --shadow-card-ink: #000000;
+    --shadow-card-red: var(--red-deep);
+    --on-red:  #f1e8d4;
+    --on-gold: #14110c;
+    --on-ink-eyebrow: var(--red);
+    --gold-deep: #f0c548;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--body);
+  font-weight: 400;
+  font-size: 17px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100vh;
+  transition: background-color 0.4s var(--ease-out), color 0.4s var(--ease-out);
+}
+
+/* Paper grain — layered over everything, fixed to viewport. Color matrix
+   is driven by CSS vars so dark mode flips to a screen-blend highlight. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: var(--grain-blend);
+  background-image: var(--grain-url);
+}
+
+:root {
+  --grain-url: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.08  0 0 0 0 0.07  0 0 0 0 0.06  0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+[data-theme="dark"] {
+  --grain-url: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.95  0 0 0 0 0.88  0 0 0 0 0.72  0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --grain-url: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.95  0 0 0 0 0.88  0 0 0 0 0.72  0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+}
+
+/* Vignette — deepens corners. Dark mode goes notably darker. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99;
+  background: radial-gradient(ellipse at center, transparent 50%, var(--vignette) 100%);
+}
+
+::selection {
+  background: var(--red);
+  color: var(--paper);
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+
+input {
+  font-family: inherit;
+  color: inherit;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--paper-edge);
+  border-radius: 4px;
+  border: 2px solid var(--paper);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
