@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 from .dictionary import Dictionary
 from .generator import GeneratorConfig, NoPuzzleFound, Puzzle, generate
 from .lemmatizer import Lemmatizer
-from .overrides import apply_to_dictionary, load as load_overrides
+from .overrides import apply_to_dictionary, load as load_overrides, normalize as normalize_overrides
 from . import store
 from . import state_store as state_store_mod
 
@@ -108,17 +108,25 @@ async def lifespan(_app: FastAPI):
         _state.generator_cfg = _DEFAULT_STUB_CFG
         log.info("dictionary: stub TSV, %d lemmas (run scripts/build_dictionary.py for real)", len(_state.dictionary))
 
+    # Single shared MorphAnalyzer: normalize_overrides + Lemmatizer both need
+    # one, and a fresh instance is ~30MB / ~200ms to load.
+    import pymorphy3
+    morph = pymorphy3.MorphAnalyzer()
+
     # Apply overrides on every startup. Cheap, and lets a fresh `exclude` take
-    # effect without rebuilding the DB.
+    # effect without rebuilding the DB. Normalize ё in include/exclude keys
+    # first so authors can write `exclude: [ребенок]` and it still matches the
+    # DB entry "ребёнок".
     ov_path = os.environ.get("RSB_OVERRIDES", str(DEFAULT_OVERRIDES))
     overrides = load_overrides(ov_path)
+    overrides = normalize_overrides(overrides, morph)
     before = len(_state.dictionary)
     _state.dictionary = apply_to_dictionary(_state.dictionary, overrides)
     log.info("overrides: include=%d exclude=%d net=%+d (now %d)",
              len(overrides.include), len(overrides.exclude),
              len(_state.dictionary) - before, len(_state.dictionary))
 
-    _state.lemmatizer = Lemmatizer()
+    _state.lemmatizer = Lemmatizer(analyzer=morph)
 
     # Mutable game state (puzzles, future scores). Picks Turso if
     # TURSO_DATABASE_URL+TURSO_AUTH_TOKEN are set; otherwise local SQLite.

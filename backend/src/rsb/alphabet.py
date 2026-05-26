@@ -85,3 +85,36 @@ def contains_letter(word_mask: int, letter: str) -> bool:
 def is_pangram(word_mask: int, hive_mask_: int) -> bool:
     """True iff the word uses *every* hive letter at least once."""
     return (word_mask & hive_mask_) == hive_mask_
+
+
+def canonical_lemma(morph, raw: str) -> str | None:
+    """Yo-aware lemma normalization for the dictionary build + override loader.
+
+    The Lyashevskaya–Sharov frequency source spells common Ё-words without ё
+    (e.g. "ребенок" 658 ipm, "елка", "лед"); pymorphy3 canonicalizes those to
+    the Ё-form. Without this helper, the round-trip check `parse.normal_form ==
+    raw` fails and the row is silently dropped.
+
+    Returns:
+      - `raw` if pymorphy3 has any parse with `normal_form == raw` (already
+        canonical; fast path).
+      - the yo-corrected form `cand` if pymorphy3 normalizes `raw` to `cand`
+        where they differ ONLY by ё↔е, AND `cand` itself round-trips.
+      - `None` otherwise (the row would have been dropped today; same outcome).
+
+    The `fold_yo` guard prevents accidental rewrites from pymorphy3 reparsing
+    an oblique form as an unrelated lexeme (e.g. "стекла" → "стекло").
+    """
+    folded = fold_yo(raw)
+    yo_candidate: str | None = None
+    for p in morph.parse(raw):
+        if p.normal_form == raw:
+            return raw
+        if yo_candidate is None and fold_yo(p.normal_form) == folded:
+            yo_candidate = p.normal_form
+    if yo_candidate is None:
+        return None
+    for p in morph.parse(yo_candidate):
+        if p.normal_form == yo_candidate:
+            return yo_candidate
+    return None

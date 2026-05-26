@@ -62,3 +62,25 @@ def test_candidate_lemmas_preserves_order(lem):
     cands = lem.candidate_lemmas("стекла")
     assert cands[0] == "стекло"  # pymorphy3's top-ranked parse
     assert "стечь" in cands
+
+
+def test_suppletive_plural_дети_resolves_to_ребёнок(lem):
+    # Regression: pre-fix, дети → ребёнок but ребёнок was missing from the DB
+    # because the freq source spelled it "ребенок" and the build's round-trip
+    # check failed. Once canonical_lemma rescues it at build time, the resolve
+    # path naturally accepts.
+    r = lem.resolve("дети", valid_lemmas={"ребёнок"})
+    assert r.status == "accepted"
+    assert r.lemma == "ребёнок"
+
+
+def test_resolve_yo_fallback_in_valid_set(lem, caplog):
+    # Defensive fallback for the case where valid_lemmas inadvertently holds
+    # the no-yo form. Resolves to whatever is in the valid set (so already-found
+    # dedup keeps working), and emits a warning.
+    import logging
+    with caplog.at_level(logging.WARNING, logger="rsb.lemmatizer"):
+        r = lem.resolve("ёлка", valid_lemmas={"елка"})
+    assert r.status == "accepted"
+    assert r.lemma == "елка"
+    assert any("ё-fallback" in rec.message for rec in caplog.records)

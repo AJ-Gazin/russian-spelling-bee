@@ -2,7 +2,7 @@
 
 **This file is the canonical description of what is actually live on this branch.** When behavior changes, update this file in the same change. Stale `STATUS.md` is a bug. The original planning document at [`docs/original-design.md`](docs/original-design.md) is preserved as a frozen reference; where the two diverge, `STATUS.md` wins. The active work queue is [`todo.md`](todo.md). Empirical numbers per generation strategy live in [`docs/benchmarks/`](docs/benchmarks/README.md) — run `backend/scripts/sample_puzzles.py` to add a new entry whenever a generation/selection strategy changes.
 
-> **Last meaningful update:** **Bundled deploy to a Hugging Face Space with Turso state store.** Live at https://ajgazin-russian-spelling-bee.hf.space. Multi-stage Dockerfile (Node build → Python runtime) sits at repo root; the Svelte SPA is served at `/`, the FastAPI backend at `/api/*`. Puzzle state moved out of `store.py` (now lemma-only) into a new `state_store.py` with two implementations: local SQLite for dev, [Turso](https://turso.tech) libsql for production — picked at startup by env vars. `scripts/deploy_hf.sh` is the one-command redeploy. Previous focus carried forward: **UI/UX audit & polish** (separate session).
+> **Last meaningful update:** **Yo-recovery in the dictionary build pipeline.** The Lyashevskaya–Sharov source spells many common Ё-words without ё (`ребенок` 658 ipm, `елка`, `лед`, `весёлый`, `чёрный`, …); pymorphy3 normalizes them to the ё-form, so the pre-existing `parse.normal_form == lemma` round-trip check silently dropped ~1,200 of them. New `alphabet.canonical_lemma()` rewrites raw → canonical at build time, with a `fold_yo(...) == fold_yo(...)` guard so we don't accidentally re-key unrelated reparses. DB goes from 41,706 → 42,856 lemmas, including `ребёнок` (so `дети` finally credits the correct headword). Same helper is reused by `overrides.normalize()` so authors can write either spelling. Lemmatizer gained a defensive `fold_yo` fallback that logs a warning if it ever fires (it shouldn't in production). Previous focus carried forward: **UI/UX audit & polish** (separate session).
 
 ---
 
@@ -12,12 +12,12 @@
 |---|---|---|
 | Project skeleton + docs | live | `README.md`, `STATUS.md`, `todo.md`, `docs/` |
 | Backend (Python 3.12, uv) | live | `backend/pyproject.toml` |
-| Alphabet + Ё/Е + bitmasks | live | `backend/src/rsb/alphabet.py` |
-| Lemmatizer (pymorphy3 wrapper) | live; ambiguity rule + Ё/Е normalization | `backend/src/rsb/lemmatizer.py` |
+| Alphabet + Ё/Е + bitmasks | live; includes yo-aware `canonical_lemma` helper | `backend/src/rsb/alphabet.py` |
+| Lemmatizer (pymorphy3 wrapper) | live; ambiguity rule + Ё/Е normalization (incl. defensive fallback) | `backend/src/rsb/lemmatizer.py` |
 | Dictionary loader (TSV + DB) | live; loads from SQLite if populated, falls back to stub TSV | `backend/src/rsb/dictionary.py` |
 | Stub lemma list | live; hand-curated ~300 words for fallback / tests | `backend/data/stub_lemmas.tsv` |
-| Real dictionary pipeline | live; 41,706 lemmas from L–S 2011 (Freq2011.zip) | `backend/scripts/build_dictionary.py` |
-| Overrides | live; YAML include/exclude/aliases; 27 seeded excludes; aliases loaded but unused | `backend/src/rsb/overrides.py`, `backend/data/overrides.yaml` |
+| Real dictionary pipeline | live; 42,856 lemmas from L–S 2011 (Freq2011.zip) with yo-recovery | `backend/scripts/build_dictionary.py` |
+| Overrides | live; YAML include/exclude/aliases; 27 seeded excludes; ё-normalized at load; aliases loaded but unused | `backend/src/rsb/overrides.py`, `backend/data/overrides.yaml` |
 | Scoring + ranks | live; planning-doc table | `backend/src/rsb/scoring.py` |
 | Puzzle generator | live; constraint-checked; deterministic under seed; `top_n` difficulty knob; **form-level fitness** | `backend/src/rsb/generator.py` |
 | Lemma store (SQLite, read-only at runtime) | live; `lemmas` table (schema v2 with `form_masks`) — baked into the Docker image | `backend/src/rsb/store.py` |
@@ -25,7 +25,7 @@
 | FastAPI server | live; 5 endpoints under `/api`; serves the built Svelte SPA at `/` when `./static/` exists | `backend/src/rsb/api.py` |
 | Svelte 5 frontend | live; full play loop in browser; difficulty selector | `frontend/src/` |
 | HF Space deploy | live at https://ajgazin-russian-spelling-bee.hf.space; multi-stage Dockerfile; `scripts/deploy_hf.sh` for one-command redeploy | `Dockerfile`, `scripts/deploy_hf.sh`, `docs/deploy-huggingface.md` |
-| Tests | 47 passing | `backend/tests/*.py` |
+| Tests | 65 passing | `backend/tests/*.py` |
 | UX polish (final pass) | **partial — see "Open UX work" below** | `frontend/src/lib/*.svelte` |
 
 ---
@@ -62,17 +62,17 @@ Not yet implemented: per-letter frequency floors that guarantee rare letters (Ф
 
 ## Dictionary
 
-**Real pipeline live.** `backend/scripts/build_dictionary.py` fetches `Freq2011.zip` from `dict.ruslang.ru`, extracts `freqrnc2011.csv` (Lyashevskaya–Sharov 2011 update), parses, filters, and writes 41,706 lemmas to the `lemmas` table in `backend/data/rsb.db`. The API auto-prefers the DB-backed dictionary on startup; if the `lemmas` table is empty it falls back to `backend/data/stub_lemmas.tsv` (~300 hand-curated rows kept for tests and fresh-checkout fallback).
+**Real pipeline live.** `backend/scripts/build_dictionary.py` fetches `Freq2011.zip` from `dict.ruslang.ru`, extracts `freqrnc2011.csv` (Lyashevskaya–Sharov 2011 update), parses, filters, and writes 42,856 lemmas to the `lemmas` table in `backend/data/rsb.db`. The API auto-prefers the DB-backed dictionary on startup; if the `lemmas` table is empty it falls back to `backend/data/stub_lemmas.tsv` (~300 hand-curated rows kept for tests and fresh-checkout fallback).
 
 Filters applied at build time:
 - Frequency ≥ 0.5 ipm
 - Open-class POS only: noun, verb, adjective, adverb, numeral, predicative, synthetic comparative
 - Closed-class dropped: prepositions, conjunctions, particles, interjections, all pronoun classes
 - Lemmas containing anything outside `{HIVE_LETTERS ∪ Ё}` (hyphens, spaces, latin, digits, Ъ) dropped
-- pymorphy3 must round-trip the lemma to itself
+- pymorphy3 must round-trip the lemma to itself (yo-aware: if raw → pymorphy normal_form differs only by ё↔е and the ё-form round-trips, the row is rewritten to that ё-form before the freq-sum dedup)
 - Proper nouns dropped via pymorphy3 grammeme check (Geox, Surn, Patr, Name, Init, Trad, Orgn)
 
-After overrides are applied, the live dictionary holds **41,684 lemmas**.
+The yo-recovery step rescued ~1,200 common nouns (incl. `ребёнок`, `ёлка`, `лёд`, `весёлый`, `чёрный`) that the source spells without ё. Overrides are pre-applied at build time (`apply_to_rows` runs against pymorphy-normalized rows), so the on-disk count *is* the live count — **42,856 lemmas**.
 
 ---
 
@@ -84,6 +84,7 @@ After overrides are applied, the live dictionary holds **41,684 lemmas**.
 - `aliases`: surface-form → lemma overrides for cases where pymorphy3 mis-parses. **Loaded but not yet consumed** by the lemmatizer — a follow-up will plumb it through (no real-world hits yet).
 
 `overrides.py` exposes:
+- `normalize()` — routes each include/exclude lemma and each alias *value* through `alphabet.canonical_lemma` so an author can write `exclude: [ребенок]` and still match the canonical `ребёнок` in the DB. Called by both the build script and the API on startup. Alias *keys* are surface forms (not lemmas) and are left untouched.
 - `apply_to_rows()` — called by the build script between pymorphy3 validation and the SQLite write.
 - `apply_to_dictionary()` — called by the API on startup, so a new `exclude` takes effect on next restart without rebuilding the SQLite table.
 
@@ -95,7 +96,7 @@ Implemented in `backend/src/rsb/lemmatizer.py`. Returns `Resolution(status, lemm
 
 - A player input is accepted iff **any** `pymorphy3` parse normalizes to a lemma in the puzzle's valid-lemma set.
 - When multiple parses qualify, the highest-`pymorphy3.score` parse wins (deterministic).
-- pymorphy3 already canonicalizes player Е→Ё internally (so *елка* parses to *ёлка*). We rely on that; lemmas are stored Ё-aware.
+- pymorphy3 already canonicalizes player Е→Ё internally (so *елка* parses to *ёлка*). We rely on that; lemmas are stored Ё-aware. A defensive `fold_yo` retry catches the rare case where a parse lemma differs from a valid-set entry only by ё↔е (e.g. a hand-curated stub spells a lemma without ё); when it fires, the resolved lemma is the *valid-set* spelling (so already-found dedup keeps working) and a warning is logged.
 - API surfaces three distinct rejection statuses plus `accepted`/`already_found`:
   - `not_in_set`: parsed cleanly but no parse resolves to a puzzle lemma.
   - `unparseable`: pymorphy3 returned no parses at all.

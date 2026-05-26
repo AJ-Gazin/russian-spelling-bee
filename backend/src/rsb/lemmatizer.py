@@ -20,10 +20,15 @@ The lemmatizer is also consulted on misses to classify the rejection reason:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Iterable
 
 import pymorphy3
+
+from .alphabet import fold_yo
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,13 +79,29 @@ class Lemmatizer:
         candidates: list[str] = []
         seen: set[str] = set()
         first_hit: str | None = None
+        # Lazily built fold-keyed view of `valid` for the ё-fallback. After the
+        # build pipeline fix, the DB consistently stores ё-forms and pymorphy3
+        # normalizes input to ё, so this fallback should never fire in
+        # production — the warning logs an early signal if it does.
+        folded_valid: dict[str, str] | None = None
         for p in parses:
             lemma = p.normal_form
             if lemma not in seen:
                 seen.add(lemma)
                 candidates.append(lemma)
-            if first_hit is None and lemma in valid:
-                first_hit = lemma
+            if first_hit is None:
+                if lemma in valid:
+                    first_hit = lemma
+                else:
+                    if folded_valid is None:
+                        folded_valid = {fold_yo(v): v for v in valid}
+                    hit = folded_valid.get(fold_yo(lemma))
+                    if hit is not None:
+                        _log.warning(
+                            "Lemmatizer ё-fallback: parse %r matched valid lemma %r via fold_yo",
+                            lemma, hit,
+                        )
+                        first_hit = hit
         if first_hit is not None:
             return Resolution(status="accepted", lemma=first_hit, candidates=tuple(candidates))
         return Resolution(status="not_in_set", candidates=tuple(candidates))

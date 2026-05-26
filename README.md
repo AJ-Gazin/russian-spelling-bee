@@ -17,7 +17,7 @@ backend/            Python (uv-managed, Python 3.12). pymorphy3 + FastAPI.
                     scoring, store, state_store, overrides, api).
   scripts/          build_dictionary.py — fetches L–S frequency list and compiles
                     the lemma table.
-  tests/            pytest. 47 passing.
+  tests/            pytest. 65 passing.
   data/             stub_lemmas.tsv (checked in), overrides.yaml (checked in),
                     rsb.db (gitignored — generated).
 
@@ -48,9 +48,9 @@ Two processes. Run both, then open `http://localhost:5173`.
 ```sh
 cd backend
 uv sync                                      # first time only
-uv run python scripts/build_dictionary.py    # one-time: fetches L–S, compiles ~42k lemmas into SQLite (~30s)
+uv run python scripts/build_dictionary.py    # one-time: fetches L–S, compiles ~43k lemmas into SQLite (~30s)
 uv run uvicorn rsb.api:app --reload          # dev server on :8000
-uv run pytest                                # 47 tests
+uv run pytest                                # 65 tests
 ```
 
 If `build_dictionary.py` hasn't been run yet, the API falls back to the small hand-curated stub at `backend/data/stub_lemmas.tsv`. The auto-generated puzzles will be tiny but the play loop works.

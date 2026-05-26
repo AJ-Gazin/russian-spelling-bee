@@ -22,7 +22,7 @@ from typing import Iterable
 
 import yaml
 
-from .alphabet import letter_mask
+from .alphabet import canonical_lemma, letter_mask
 from .dictionary import Dictionary, Lemma, compute_form_masks
 
 
@@ -58,6 +58,39 @@ def load(path: Path | str) -> Overrides:
     aliases = {str(k).strip().lower(): str(v).strip().lower() for k, v in al_raw.items()}
 
     return Overrides(include=tuple(inc), exclude=exc, aliases=aliases)
+
+
+def normalize(ov: Overrides, morph) -> Overrides:
+    """Route every include/exclude lemma and every alias *value* through
+    `canonical_lemma` so authors can spell entries with or without ё and still
+    match the canonical Ё-form used in the DB.
+
+    Alias *keys* are user-facing surface forms (not lemmas), so they are not
+    canonicalized.
+
+    Entries that fail to round-trip are left unchanged (in exclude: harmless;
+    in include: will be re-dropped at the apply step).
+    """
+    new_include: list[Lemma] = []
+    for l in ov.include:
+        canon = canonical_lemma(morph, l.lemma)
+        if canon is None or canon == l.lemma:
+            new_include.append(l)
+        else:
+            new_include.append(Lemma(
+                lemma=canon,
+                pos=l.pos,
+                freq_ipm=l.freq_ipm,
+                mask=letter_mask(canon),
+                form_masks=l.form_masks,
+            ))
+    new_exclude = frozenset(
+        (canonical_lemma(morph, x) or x) for x in ov.exclude
+    )
+    new_aliases = {
+        k: (canonical_lemma(morph, v) or v) for k, v in ov.aliases.items()
+    }
+    return Overrides(include=tuple(new_include), exclude=new_exclude, aliases=new_aliases)
 
 
 def apply_to_rows(

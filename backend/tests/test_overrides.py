@@ -1,8 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from rsb.alphabet import letter_mask
 from rsb.dictionary import Dictionary, Lemma
-from rsb.overrides import Overrides, apply_to_dictionary, apply_to_rows, load
+from rsb.overrides import Overrides, apply_to_dictionary, apply_to_rows, load, normalize
 
 
 def test_load_minimal(tmp_path: Path):
@@ -67,3 +69,35 @@ def test_apply_include_does_not_duplicate():
     assert len(out) == 1
     # Original kept; include is a no-op when the lemma is already present.
     assert out[0][2] == 1500.0
+
+
+@pytest.fixture(scope="module")
+def morph():
+    import pymorphy3
+    return pymorphy3.MorphAnalyzer()
+
+
+def test_normalize_yo_in_exclude(morph):
+    # Author wrote "ребенок" (no ё) in exclude; should match DB entry "ребёнок".
+    ov = Overrides(exclude=frozenset({"ребенок", "садик"}))
+    norm = normalize(ov, morph)
+    assert "ребёнок" in norm.exclude
+    assert "садик" in norm.exclude  # no yo to recover; passthrough
+
+
+def test_normalize_yo_in_include(morph):
+    ov = Overrides(include=(
+        Lemma(lemma="ребенок", pos="NOUN", freq_ipm=10.0, mask=letter_mask("ребенок")),
+    ))
+    norm = normalize(ov, morph)
+    assert len(norm.include) == 1
+    assert norm.include[0].lemma == "ребёнок"
+    # mask was recomputed for the canonical form.
+    assert norm.include[0].mask == letter_mask("ребёнок")
+
+
+def test_normalize_aliases_canonicalizes_values_only(morph):
+    # Alias keys are surface forms (not lemmas); values are lemmas.
+    ov = Overrides(aliases={"детишки": "ребенок"})
+    norm = normalize(ov, morph)
+    assert norm.aliases == {"детишки": "ребёнок"}

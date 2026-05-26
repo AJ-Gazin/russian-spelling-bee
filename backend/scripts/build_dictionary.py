@@ -18,7 +18,15 @@ Filters (see also overrides — todo #8):
     — closed-class (prepositions, conjunctions, particles, interjections, pronouns)
       are dropped per the planning doc
   - Proper nouns (pymorphy3 tag with Geox/Surn/Patr/Name/Init/Trad) are dropped
-  - pymorphy3 must recognize the lemma (round-trip check)
+
+Normalization (not a filter — runs before the dedup merge):
+  - Yo-recovery via `canonical_lemma`: the source spells common Ё-nouns without
+    ё (e.g. "ребенок" 658 ipm); pymorphy3 canonicalizes those to the Ё-form,
+    which is what we key on. Two source rows that canonicalize to the same
+    Ё-form (e.g. "ребенок" + a hypothetical "ребёнок") collapse via the
+    existing freq-sum dedup.
+  - Rows where neither the raw form nor its Ё-variant round-trips through
+    pymorphy3 are dropped here as "unknown".
 """
 
 from __future__ import annotations
@@ -35,9 +43,9 @@ from typing import Iterator
 # Ensure backend/src is importable when running as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsb.alphabet import HIVE_LETTERS, letter_mask  # noqa: E402
+from rsb.alphabet import HIVE_LETTERS, canonical_lemma, letter_mask  # noqa: E402
 from rsb.dictionary import compute_form_masks  # noqa: E402
-from rsb.overrides import apply_to_rows, load as load_overrides  # noqa: E402
+from rsb.overrides import apply_to_rows, load as load_overrides, normalize as normalize_overrides  # noqa: E402
 from rsb.store import open_db, replace_lemmas  # noqa: E402
 
 # Try-import here keeps the script reportable when pymorphy3 isn't installed.
@@ -147,10 +155,11 @@ def build(
 ) -> int:
     morph = pymorphy3.MorphAnalyzer()
 
-    # Step 1: parse + initial filter (frequency, POS, clean lemma).
+    # Step 1: parse + initial filter (frequency, POS, clean lemma) + yo-recovery.
     print("  filtering rows ...")
-    candidates: dict[str, tuple[str, float]] = {}  # lemma -> (best_pos_label, summed_freq)
-    seen, kept_initial, dropped_freq, dropped_pos, dropped_clean = 0, 0, 0, 0, 0
+    candidates: dict[str, tuple[str, float]] = {}  # canonical lemma -> (best_pos_label, summed_freq)
+    seen, kept_initial, dropped_freq, dropped_pos, dropped_clean, dropped_no_canon = 0, 0, 0, 0, 0, 0
+    yo_recovered = 0
     for lemma, ls_pos, freq in iter_rows(csv_path):
         seen += 1
         if freq < freq_threshold:
@@ -163,23 +172,34 @@ def build(
         if not is_clean_lemma(lemma):
             dropped_clean += 1
             continue
-        # Aggregate per lemma: keep the highest-frequency POS as the canonical
-        # entry; sum frequencies across POSes so e.g. "стекло (NOUN)" gets full credit.
-        cur = candidates.get(lemma)
+        # Yo-aware canonical form: "ребенок" → "ребёнок". Rows whose raw form
+        # and its yo-variant both fail to round-trip are dropped here.
+        canon = canonical_lemma(morph, lemma)
+        if canon is None:
+            dropped_no_canon += 1
+            continue
+        if canon != lemma:
+            yo_recovered += 1
+        # Aggregate per canonical lemma: keep the highest-frequency POS as the
+        # canonical entry; sum frequencies across POSes so e.g. "стекло (NOUN)"
+        # gets full credit.
+        cur = candidates.get(canon)
         if cur is None:
-            candidates[lemma] = (pos_label, freq)
+            candidates[canon] = (pos_label, freq)
             kept_initial += 1
         else:
             cur_pos, cur_freq = cur
             new_total = cur_freq + freq
             # Prefer the highest-freq POS as canonical label.
             best_pos = pos_label if freq > cur_freq else cur_pos
-            candidates[lemma] = (best_pos, new_total)
+            candidates[canon] = (best_pos, new_total)
 
-    print(f"    rows seen:                {seen}")
-    print(f"    dropped by freq <{freq_threshold}: {dropped_freq}")
+    print(f"    rows seen:                   {seen}")
+    print(f"    dropped by freq <{freq_threshold}:    {dropped_freq}")
     print(f"    dropped by closed-class POS: {dropped_pos}")
     print(f"    dropped by alphabet check:   {dropped_clean}")
+    print(f"    dropped by no round-trip:    {dropped_no_canon}")
+    print(f"    yo-recovered (raw→ё):        {yo_recovered}")
     print(f"    distinct lemmas kept:        {len(candidates)}")
 
     # Step 2: pymorphy3 round-trip + proper-noun filter + form-mask enumeration.
@@ -203,11 +223,14 @@ def build(
     avg_forms = (sum(len(r[4]) for r in final) / len(final)) if final else 0.0
     print(f"    avg distinct form-masks/lemma: {avg_forms:.1f}")
 
-    # Step 2.5: apply manual overrides (include/exclude).
+    # Step 2.5: apply manual overrides (include/exclude). Normalize ё in
+    # include/exclude keys so authors can write `exclude: [ребенок]` without
+    # silently missing the yo-corrected DB entry "ребёнок".
     overrides_path = BACKEND_ROOT / "data" / "overrides.yaml"
     ov = load_overrides(overrides_path)
+    ov = normalize_overrides(ov, morph)
     before = len(final)
-    final = apply_to_rows(final, ov)
+    final = apply_to_rows(final, ov, morph=morph)
     print(f"  overrides: include={len(ov.include)} exclude={len(ov.exclude)} net change: {len(final) - before:+d}")
     print(f"  final count: {len(final)}")
 

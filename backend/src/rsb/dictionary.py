@@ -74,7 +74,13 @@ class Dictionary:
     @classmethod
     def from_tsv(cls, path: Path | str) -> "Dictionary":
         """Load lemmas from a hand-curated TSV. Form-masks are computed via
-        pymorphy3 on load — fine for the small stub list (~250 lemmas)."""
+        pymorphy3 on load — fine for the small stub list (~250 lemmas).
+
+        TODO: route lemmas through `alphabet.canonical_lemma` like the build
+        pipeline does, so a stub author can write 'ребенок' (no ё) without it
+        silently failing the form-mask round-trip. Stub TSV is currently
+        ё-correct so no live bug.
+        """
         import pymorphy3
         morph = pymorphy3.MorphAnalyzer()
         path = Path(path)

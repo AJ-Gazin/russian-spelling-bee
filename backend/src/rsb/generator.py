@@ -21,7 +21,7 @@ import random
 from dataclasses import asdict, dataclass, field, replace
 from typing import Iterable
 
-from .alphabet import HIVE_LETTERS, VOWELS, hive_mask, is_pangram, letter_bit, letter_mask
+from .alphabet import HIVE_LETTERS, VOWELS, fold_yo, hive_mask, is_pangram, letter_bit, letter_mask
 from .dictionary import Dictionary, Lemma
 from .scoring import MIN_WORD_LENGTH, points_for, thresholds_for, RankThresholds
 
@@ -81,7 +81,7 @@ def _letter_weights(dictionary: Dictionary) -> dict[str, float]:
     counts: dict[str, int] = {ch: 0 for ch in HIVE_LETTERS}
     for l in dictionary:
         # Count distinct letters per lemma so a 5-Ё word doesn't get 5 votes.
-        for ch in set(l.lemma.replace("ё", "е")):
+        for ch in set(fold_yo(l.lemma)):
             if ch in counts:
                 counts[ch] += 1
     return {ch: float(c) for ch, c in counts.items()}
