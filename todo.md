@@ -32,6 +32,22 @@ Small backend items that aren't blocking but should be revisited:
 - [ ] Per-letter rare-letter floors (Ф Ц Щ Э rotation guarantees) — currently best-effort via frequency weights only
 - [ ] Lemmatizer consults `aliases` from `overrides.yaml` — currently the section is loaded but unused (no real-world hits today; trivial to plumb when needed)
 - [ ] **Difficulty future:** custom-N input for power users (presets only today)
+- [ ] **Generator calibration after form-fitness:** the form-level fitness rule (a lemma is admitted if any of its inflected forms fits the hive) admits more lemmas per hive than the old citation-form rule. Re-tune `min_lemmas` / `max_lemmas` bands and `top_n` preset thresholds once we have play data on real puzzles.
+
+---
+
+## Per-POS folding rules (deferred)
+
+The form-fitness rule (post-implementation) accepts any inflected form of a lemma. Separate from that — and still open — is **how aggressively to fold related lemmas into one entry** before they reach the puzzle. Each item below is a calibration question, not a blocker.
+
+- [ ] **Participles → parent verb vs standalone adjective.** pymorphy3 lemmatizes *пишущий* as its own ADJF lemma, not as a form of *писать*. Decide whether to merge active/passive participles into their parent verb (so finding *пишущий* counts as finding *писать*) or keep them as distinct entries.
+- [ ] **Aspect pairs.** *читать* / *прочитать*, *делать* / *сделать* are separate lemmas. Many pairs differ only by a semantically-vacuous prefix and feel like one verb to players. Decide which prefixes (по-, про-, с-, на-, …) collapse and which preserve a meaning distinction.
+- [ ] **Reflexives.** *мыть* / *мыться*, *учить* / *учиться*. Almost always semantically distinct (transitive vs reflexive); recommend keeping separate, but worth confirming on real data.
+- [ ] **Adjective short forms.** *красив* (short) vs *красивый* (long). pymorphy3 may produce *красив* as its own lemma in some parses. Decide whether short forms collapse into long forms always.
+- [ ] **Comparatives & superlatives.** *красивее* (comparative), *красивейший* (synthetic superlative). Often have their own headwords in some dictionaries. Decide whether to collapse.
+- [ ] **Diminutives.** *кот* / *котик*, *дом* / *домик*. Probably keep separate (semantically distinct), but the diminutive overrides file already curates some of these — audit.
+
+A reasonable approach: write a folding script that walks the lemma table, proposes merges by rule, dumps a YAML diff for human review (yes/no/keep), and applies accepted merges as an `aliases` extension to `overrides.yaml`. Defers the linguistic judgment to a one-time editorial pass rather than baking it into the build pipeline.
 
 ---
 

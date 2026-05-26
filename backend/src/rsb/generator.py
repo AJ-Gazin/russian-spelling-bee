@@ -122,6 +122,10 @@ def _score_lemmas(lemmas: list[Lemma], hive_mask_: int) -> list[ScoredLemma]:
         # but they don't appear in any puzzle's valid set.
         if len(l.lemma) < MIN_WORD_LENGTH:
             continue
+        # Pangram check uses the lemma's *own* mask, not any of its form
+        # masks — this preserves the invariant that an advertised pangram is
+        # the citation form itself (a recognizable word), not an obscure
+        # inflection that happens to use all 7 letters.
         pangram = is_pangram(l.mask, hive_mask_)
         out.append(
             ScoredLemma(

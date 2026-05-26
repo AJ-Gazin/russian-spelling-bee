@@ -1,8 +1,8 @@
 # Russian Spelling Bee — current implementation snapshot
 
-**This file is the canonical description of what is actually live on this branch.** When behavior changes, update this file in the same change. Stale `STATUS.md` is a bug. The original planning document at [`docs/original-design.md`](docs/original-design.md) is preserved as a frozen reference; where the two diverge, `STATUS.md` wins. The active work queue is [`todo.md`](todo.md).
+**This file is the canonical description of what is actually live on this branch.** When behavior changes, update this file in the same change. Stale `STATUS.md` is a bug. The original planning document at [`docs/original-design.md`](docs/original-design.md) is preserved as a frozen reference; where the two diverge, `STATUS.md` wins. The active work queue is [`todo.md`](todo.md). Empirical numbers per generation strategy live in [`docs/benchmarks/`](docs/benchmarks/README.md) — run `backend/scripts/sample_puzzles.py` to add a new entry whenever a generation/selection strategy changes.
 
-> **Last meaningful update:** difficulty knob (top-N preset selector) live end-to-end. The puzzle is fully playable in the browser against the real ~42k-lemma Lyashevskaya–Sharov dictionary, with a 4-preset difficulty selector and the three distinct rejection-mode toasts. Next planned focus: **UI/UX audit & polish** (separate session).
+> **Last meaningful update:** **form-level fitness rule** for puzzle membership — a lemma now belongs in a puzzle if any of its *inflected forms* fits the hive (subset of letters, contains center), not only the citation form. This eliminates the "letters are right there but it doesn't count" trap (e.g. *сеть* in a hive with с, е, т, и but no ь — *сети* fits, so *сеть* is on the answer list). Pangrams still require the lemma's citation form to be the pangram, so advertised pangrams remain recognizable. Schema bumped to v2; existing DBs auto-migrate on first startup (~7s for 41k lemmas). Next planned focus: **UI/UX audit & polish** (separate session).
 
 ---
 
@@ -19,11 +19,11 @@
 | Real dictionary pipeline | live; 41,706 lemmas from L–S 2011 (Freq2011.zip) | `backend/scripts/build_dictionary.py` |
 | Overrides | live; YAML include/exclude/aliases; 27 seeded excludes; aliases loaded but unused | `backend/src/rsb/overrides.py`, `backend/data/overrides.yaml` |
 | Scoring + ranks | live; planning-doc table | `backend/src/rsb/scoring.py` |
-| Puzzle generator | live; constraint-checked; deterministic under seed; `top_n` difficulty knob | `backend/src/rsb/generator.py` |
-| SQLite store | live; `puzzles` and `lemmas` tables | `backend/src/rsb/store.py` |
+| Puzzle generator | live; constraint-checked; deterministic under seed; `top_n` difficulty knob; **form-level fitness** | `backend/src/rsb/generator.py` |
+| SQLite store | live; `puzzles` and `lemmas` tables (schema v2 with `form_masks`) | `backend/src/rsb/store.py` |
 | FastAPI server | live; 4 endpoints; auto-generates first puzzle | `backend/src/rsb/api.py` |
 | Svelte 5 frontend | live; full play loop in browser; difficulty selector | `frontend/src/` |
-| Tests | 44 passing | `backend/tests/*.py` |
+| Tests | 47 passing | `backend/tests/*.py` |
 | UX polish (final pass) | **partial — see "Open UX work" below** | `frontend/src/lib/*.svelte` |
 
 ---
@@ -119,9 +119,18 @@ Implemented in `backend/src/rsb/scoring.py`. Follows the planning doc:
 Implemented in `backend/src/rsb/generator.py`:
 
 - Weighted letter sampling without replacement (Efraimidis–Spirakis), weighted by per-letter lemma occurrence count in the dictionary.
-- Per attempt: enforces `min_vowels`; for each of the 7 letters as candidate center, computes fitting lemmas via 31-bit bitmask subset test; accepts if `min_lemmas ≤ N ≤ max_lemmas`, qualifying pangram present (if required), and no single lemma exceeds `dominance_cap` of total score.
+- Per attempt: enforces `min_vowels`; for each of the 7 letters as candidate center, computes fitting lemmas via **form-level** 31-bit bitmask subset test (see "Form-level fitness rule" below); accepts if `min_lemmas ≤ N ≤ max_lemmas`, qualifying pangram present (if required), and no single lemma exceeds `dominance_cap` of total score.
 - `generate_many()` produces N distinct (letter-set, center) puzzles for previewing.
 - Deterministic under a fixed `seed`.
+
+### Form-level fitness rule
+
+A lemma belongs in the puzzle's answer list iff **at least one of its inflected forms** (length ≥ 4, alphabet-clean) has letters ⊆ hive AND contains the center. This is stored per-lemma as `Lemma.form_masks: frozenset[int]` — a set of 31-bit letter-set masks across all forms, precomputed at build time via pymorphy3's lexeme enumeration.
+
+- **Why:** the citation form often carries a final ь (нощ → ночь, сет → сеть) or other letter that excludes it from a hive that perfectly admits its other forms. Citation-form-only fitness produced the "letters are right there but it doesn't count" trap.
+- **Pangram still uses `Lemma.mask`** (the citation form), so a flagged pangram is always a recognizable word, not an obscure participle that happens to use all 7 letters.
+- **Storage:** `lemmas.form_masks TEXT` — comma-separated decimal ints, populated by `build_dictionary.py` and read by `Dictionary.from_db`. Pre-v2 DBs migrate automatically on first read (~7s for 41k lemmas; one-time cost).
+- **Calibration follow-up:** `min_lemmas`/`max_lemmas` bands and `top_n` thresholds will likely need re-tuning since more lemmas fit per hive — see `todo.md`.
 
 Two configs live in `api.py` and are selected at startup based on whether the DB dictionary is populated:
 

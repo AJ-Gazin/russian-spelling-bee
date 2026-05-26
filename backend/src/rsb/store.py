@@ -20,7 +20,7 @@ from typing import Iterator
 from .generator import Puzzle, ScoredLemma
 from .scoring import RankThresholds, thresholds_for
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -38,19 +38,36 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             payload      TEXT    NOT NULL
         );
         CREATE TABLE IF NOT EXISTS lemmas (
-            lemma    TEXT    NOT NULL PRIMARY KEY,
-            pos      TEXT    NOT NULL,
-            freq_ipm REAL    NOT NULL,
-            mask     INTEGER NOT NULL
+            lemma      TEXT    NOT NULL PRIMARY KEY,
+            pos        TEXT    NOT NULL,
+            freq_ipm   REAL    NOT NULL,
+            mask       INTEGER NOT NULL,
+            form_masks TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_lemmas_freq ON lemmas(freq_ipm);
         """
     )
+    # Migration: add form_masks column to pre-v2 DBs.
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(lemmas)").fetchall()}
+    if "form_masks" not in cols:
+        conn.execute("ALTER TABLE lemmas ADD COLUMN form_masks TEXT")
     cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
     row = cur.fetchone()
     if row is None:
         conn.execute("INSERT INTO schema_version(version) VALUES(?)", (SCHEMA_VERSION,))
+    else:
+        conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
     conn.commit()
+
+
+def _encode_form_masks(masks: frozenset[int] | set[int] | tuple[int, ...]) -> str:
+    return ",".join(str(m) for m in sorted(masks))
+
+
+def _decode_form_masks(s: str | None) -> frozenset[int]:
+    if not s:
+        return frozenset()
+    return frozenset(int(x) for x in s.split(","))
 
 
 def open_db(path: Path | str) -> sqlite3.Connection:
@@ -157,14 +174,27 @@ def count_lemmas(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) AS c FROM lemmas").fetchone()["c"]
 
 
-def replace_lemmas(conn: sqlite3.Connection, rows: list[tuple[str, str, float, int]]) -> None:
-    """Truncate-and-insert. Each row is (lemma, pos, freq_ipm, mask)."""
+def replace_lemmas(
+    conn: sqlite3.Connection,
+    rows: list[tuple[str, str, float, int]] | list[tuple[str, str, float, int, frozenset[int]]],
+) -> None:
+    """Truncate-and-insert. Each row is either (lemma, pos, freq_ipm, mask)
+    or (lemma, pos, freq_ipm, mask, form_masks). The 4-tuple form is accepted
+    for backwards compatibility — form_masks is then left NULL and migrated
+    on first read."""
     conn.execute("BEGIN")
     try:
         conn.execute("DELETE FROM lemmas")
+        normalized: list[tuple[str, str, float, int, str | None]] = []
+        for row in rows:
+            if len(row) == 4:
+                normalized.append((*row, None))
+            else:
+                lemma, pos, freq, mask, fm = row
+                normalized.append((lemma, pos, freq, mask, _encode_form_masks(fm)))
         conn.executemany(
-            "INSERT INTO lemmas(lemma, pos, freq_ipm, mask) VALUES (?, ?, ?, ?)",
-            rows,
+            "INSERT INTO lemmas(lemma, pos, freq_ipm, mask, form_masks) VALUES (?, ?, ?, ?, ?)",
+            normalized,
         )
         conn.execute("COMMIT")
     except Exception:
@@ -173,5 +203,31 @@ def replace_lemmas(conn: sqlite3.Connection, rows: list[tuple[str, str, float, i
 
 
 def iter_lemmas(conn: sqlite3.Connection):
-    for row in conn.execute("SELECT lemma, pos, freq_ipm, mask FROM lemmas"):
-        yield row["lemma"], row["pos"], row["freq_ipm"], row["mask"]
+    """Yield (lemma, pos, freq_ipm, mask, form_masks) tuples. `form_masks` is
+    a frozenset[int] — empty if the column is NULL (pre-migration row)."""
+    for row in conn.execute("SELECT lemma, pos, freq_ipm, mask, form_masks FROM lemmas"):
+        yield (
+            row["lemma"],
+            row["pos"],
+            row["freq_ipm"],
+            row["mask"],
+            _decode_form_masks(row["form_masks"]),
+        )
+
+
+def update_form_masks_bulk(
+    conn: sqlite3.Connection,
+    entries: list[tuple[str, frozenset[int]]],
+) -> None:
+    """Set form_masks for the given lemmas. Used by Dictionary.from_db to
+    persist the one-time migration of pre-v2 rows."""
+    conn.execute("BEGIN")
+    try:
+        conn.executemany(
+            "UPDATE lemmas SET form_masks = ? WHERE lemma = ?",
+            [(_encode_form_masks(fm), lemma) for lemma, fm in entries],
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise

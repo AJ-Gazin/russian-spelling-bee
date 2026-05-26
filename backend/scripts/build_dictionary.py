@@ -36,6 +36,7 @@ from typing import Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rsb.alphabet import HIVE_LETTERS, letter_mask  # noqa: E402
+from rsb.dictionary import compute_form_masks  # noqa: E402
 from rsb.overrides import apply_to_rows, load as load_overrides  # noqa: E402
 from rsb.store import open_db, replace_lemmas  # noqa: E402
 
@@ -181,9 +182,9 @@ def build(
     print(f"    dropped by alphabet check:   {dropped_clean}")
     print(f"    distinct lemmas kept:        {len(candidates)}")
 
-    # Step 2: pymorphy3 round-trip + proper-noun filter.
-    print("  validating against pymorphy3 ...")
-    final: list[tuple[str, str, float, int]] = []
+    # Step 2: pymorphy3 round-trip + proper-noun filter + form-mask enumeration.
+    print("  validating against pymorphy3 + enumerating forms ...")
+    final: list[tuple[str, str, float, int, frozenset[int]]] = []
     dropped_unknown, dropped_proper = 0, 0
     for i, (lemma, (pos_label, freq)) in enumerate(candidates.items()):
         if progress_every and i and i % progress_every == 0:
@@ -194,10 +195,13 @@ def build(
         if pos_label == "NOUN" and is_proper_noun(morph, lemma):
             dropped_proper += 1
             continue
-        final.append((lemma, pos_label, round(freq, 3), letter_mask(lemma)))
+        form_masks = compute_form_masks(morph, lemma)
+        final.append((lemma, pos_label, round(freq, 3), letter_mask(lemma), form_masks))
 
     print(f"    dropped by pymorphy3 unknown: {dropped_unknown}")
     print(f"    dropped by proper-noun:       {dropped_proper}")
+    avg_forms = (sum(len(r[4]) for r in final) / len(final)) if final else 0.0
+    print(f"    avg distinct form-masks/lemma: {avg_forms:.1f}")
 
     # Step 2.5: apply manual overrides (include/exclude).
     overrides_path = BACKEND_ROOT / "data" / "overrides.yaml"

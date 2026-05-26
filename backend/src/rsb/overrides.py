@@ -23,7 +23,7 @@ from typing import Iterable
 import yaml
 
 from .alphabet import letter_mask
-from .dictionary import Dictionary, Lemma
+from .dictionary import Dictionary, Lemma, compute_form_masks
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +46,9 @@ def load(path: Path | str) -> Overrides:
         lemma = str(row["lemma"]).strip().lower()
         pos = str(row.get("pos", "NOUN")).strip()
         freq = float(row.get("freq_ipm", 0.0))
+        # form_masks left empty here — populated lazily when overrides are
+        # actually applied (so unit tests that load overrides don't pay for
+        # pymorphy3 startup).
         inc.append(Lemma(lemma=lemma, pos=pos, freq_ipm=freq, mask=letter_mask(lemma)))
 
     exc_raw = data.get("exclude") or []
@@ -58,28 +61,62 @@ def load(path: Path | str) -> Overrides:
 
 
 def apply_to_rows(
-    rows: Iterable[tuple[str, str, float, int]],
+    rows: Iterable[tuple],
     ov: Overrides,
-) -> list[tuple[str, str, float, int]]:
-    """Apply overrides to (lemma, pos, freq_ipm, mask) rows.
+    *,
+    morph=None,
+) -> list[tuple]:
+    """Apply overrides to lemma rows.
 
-    Used by `scripts/build_dictionary.py` between pymorphy3 validation and the
-    SQLite write. Returns a new list; does not mutate input.
+    Each row is either a 4-tuple (lemma, pos, freq_ipm, mask) or a 5-tuple
+    (lemma, pos, freq_ipm, mask, form_masks). The output preserves the
+    arity of the *input* rows for backwards compatibility. When a 5-tuple is
+    expected and an `include` entry has no form_masks attached, pymorphy3 is
+    used to compute them (pass `morph` to avoid spinning up a fresh analyzer).
     """
-    out: list[tuple[str, str, float, int]] = [r for r in rows if r[0] not in ov.exclude]
+    rows_list = list(rows)
+    arity = len(rows_list[0]) if rows_list else 5
+    out: list[tuple] = [r for r in rows_list if r[0] not in ov.exclude]
     existing = {r[0] for r in out}
     for l in ov.include:
-        if l.lemma not in existing:
+        if l.lemma in existing:
+            continue
+        if arity == 4:
             out.append((l.lemma, l.pos, l.freq_ipm, l.mask))
+        else:
+            fm = l.form_masks
+            if not fm:
+                if morph is None:
+                    import pymorphy3
+                    morph = pymorphy3.MorphAnalyzer()
+                fm = compute_form_masks(morph, l.lemma)
+            out.append((l.lemma, l.pos, l.freq_ipm, l.mask, fm))
     return out
 
 
 def apply_to_dictionary(d: Dictionary, ov: Overrides) -> Dictionary:
     """Apply overrides to an in-memory Dictionary. Used by the API on startup
-    so a fresh `exclude` takes effect without rebuilding the SQLite table."""
+    so a fresh `exclude` takes effect without rebuilding the SQLite table.
+
+    Include entries get form_masks computed on the fly via pymorphy3 if the
+    Lemma was constructed without them (the common case for overrides loaded
+    from YAML)."""
     rows: list[Lemma] = [l for l in d if l.lemma not in ov.exclude]
     existing = {l.lemma for l in rows}
+    morph = None
     for l in ov.include:
-        if l.lemma not in existing:
-            rows.append(l)
+        if l.lemma in existing:
+            continue
+        if not l.form_masks:
+            if morph is None:
+                import pymorphy3
+                morph = pymorphy3.MorphAnalyzer()
+            l = Lemma(
+                lemma=l.lemma,
+                pos=l.pos,
+                freq_ipm=l.freq_ipm,
+                mask=l.mask,
+                form_masks=compute_form_masks(morph, l.lemma),
+            )
+        rows.append(l)
     return Dictionary(rows)

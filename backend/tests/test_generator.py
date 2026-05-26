@@ -29,13 +29,26 @@ def _stub_cfg(**overrides) -> GeneratorConfig:
 
 
 def test_generator_returns_valid_puzzle_on_stub(stub_dict):
+    from rsb.alphabet import hive_mask, letter_bit
+
     p = generate(stub_dict, _stub_cfg())
     assert len(p.letters) == 7
     assert p.center in p.letters
     assert p.letters[0] == p.center
     assert len(set(p.letters)) == 7
     assert p.total_points == sum(s.points for s in p.lemmas)
-    assert all(p.center in s.lemma.replace("ё", "е") or p.center in s.lemma for s in p.lemmas)
+    # Every scored lemma must have at least one inflected form that fits the
+    # hive AND contains the center — i.e., a form a player could plausibly
+    # type. The citation form alone is no longer required to fit.
+    hm = hive_mask(p.letters)
+    cb = letter_bit(p.center)
+    for s in p.lemmas:
+        l = stub_dict.get(s.lemma)
+        assert l is not None
+        masks = l.form_masks or (l.mask,)
+        assert any((m & ~hm) == 0 and (m & cb) != 0 for m in masks), (
+            f"{s.lemma}: no form fits the hive with center {p.center}"
+        )
 
 
 def test_generator_respects_min_vowels(stub_dict):
@@ -65,3 +78,22 @@ def test_generator_deterministic_under_seed(stub_dict):
     assert a.letters == b.letters
     assert a.center == b.center
     assert [s.lemma for s in a.lemmas] == [s.lemma for s in b.lemmas]
+
+
+def test_pangrams_are_citation_forms(stub_dict):
+    """A lemma flagged as a pangram must be a pangram in its citation form —
+    not merely have *some* inflected form that uses all 7 hive letters. This
+    keeps advertised pangrams recognizable to players.
+    """
+    from rsb.alphabet import hive_mask, is_pangram
+
+    p = generate(stub_dict, _stub_cfg(require_pangram=False, seed=21))
+    hm = hive_mask(p.letters)
+    for s in p.lemmas:
+        if s.is_pangram:
+            # Use letter_mask on the citation form (s.lemma) to confirm the
+            # lemma itself uses every hive letter, not just one of its forms.
+            from rsb.alphabet import letter_mask
+            assert is_pangram(letter_mask(s.lemma), hm), (
+                f"{s.lemma} flagged as pangram but its citation form isn't a pangram"
+            )
