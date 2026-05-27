@@ -84,3 +84,30 @@ def test_resolve_yo_fallback_in_valid_set(lem, caplog):
     assert r.status == "accepted"
     assert r.lemma == "елка"
     assert any("ё-fallback" in rec.message for rec in caplog.records)
+
+
+def test_alias_fallback_resolves_when_direct_lemma_missing():
+    """Lemmatizer's alias map (populated by `rsb.folds`) lets a parsed
+    lemma resolve to a different lemma in the valid set. This is the
+    *наедал* → *наедать* (alias) → *наедаться* path."""
+    lem = Lemmatizer(aliases={"наедать": "наедаться"})
+    r = lem.resolve("наедал", valid_lemmas={"наедаться"})
+    assert r.status == "accepted"
+    assert r.lemma == "наедаться"
+
+
+def test_alias_not_consulted_when_direct_lemma_in_set():
+    """When the parsed lemma is itself in the valid set, the direct match
+    wins — the alias must not silently replace it."""
+    lem = Lemmatizer(aliases={"наедать": "наедаться"})
+    r = lem.resolve("наедал", valid_lemmas={"наедать"})
+    assert r.status == "accepted"
+    assert r.lemma == "наедать"
+
+
+def test_empty_aliases_does_not_change_behavior():
+    """Smoke check that the alias-empty path is the byte-identical pre-fold
+    behavior — `not_in_set` for a parse whose lemma isn't in the set."""
+    lem = Lemmatizer(aliases={})
+    r = lem.resolve("наедал", valid_lemmas={"дом"})
+    assert r.status == "not_in_set"

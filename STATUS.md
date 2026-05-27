@@ -2,7 +2,7 @@
 
 **This file is the canonical description of what is actually live on this branch.** When behavior changes, update this file in the same change. Stale `STATUS.md` is a bug. The original planning document at [`docs/original-design.md`](docs/original-design.md) is preserved as a frozen reference; where the two diverge, `STATUS.md` wins. The active work queue is [`todo.md`](todo.md). Empirical numbers per generation strategy live in [`docs/benchmarks/`](docs/benchmarks/README.md) — run `backend/scripts/sample_puzzles.py` to add a new entry whenever a generation/selection strategy changes.
 
-> **Last meaningful update:** **Yo-recovery in the dictionary build pipeline.** The Lyashevskaya–Sharov source spells many common Ё-words without ё (`ребенок` 658 ipm, `елка`, `лед`, `весёлый`, `чёрный`, …); pymorphy3 normalizes them to the ё-form, so the pre-existing `parse.normal_form == lemma` round-trip check silently dropped ~1,200 of them. New `alphabet.canonical_lemma()` rewrites raw → canonical at build time, with a `fold_yo(...) == fold_yo(...)` guard so we don't accidentally re-key unrelated reparses. DB goes from 41,706 → 42,856 lemmas, including `ребёнок` (so `дети` finally credits the correct headword). Same helper is reused by `overrides.normalize()` so authors can write either spelling. Lemmatizer gained a defensive `fold_yo` fallback that logs a warning if it ever fires (it shouldn't in production). Previous focus carried forward: **UI/UX audit & polish** (separate session).
+> **Last meaningful update:** **Per-POS folding rules (1–4) shipped.** Reflexive alias (`X ↔ X+ся`) and three merger rules (participle/short-adj/comparative → parent) live in `backend/src/rsb/folds.py`. Conservative guards: top-parse must be the folding tag, candidate POS must match what L–S thinks the word is, and `freq_ipm < 20` for mergers (lexicalized lemmas stay). Build pipeline writes 2,893 aliases + 81 mergers; the `наедал → наедаться` regression is gone. Schema bumped to v3 (new `aliases` table). See [`docs/folding-rules.md`](docs/folding-rules.md) for the rule-by-rule rationale, including the rules we deliberately *don't* ship (aspect pairs, productive prefixes, verbal nouns, diminutives). Previous focus carried forward: **UI/UX audit & polish** (separate session).
 
 ---
 
@@ -16,16 +16,17 @@
 | Lemmatizer (pymorphy3 wrapper) | live; ambiguity rule + Ё/Е normalization (incl. defensive fallback) | `backend/src/rsb/lemmatizer.py` |
 | Dictionary loader (TSV + DB) | live; loads from SQLite if populated, falls back to stub TSV | `backend/src/rsb/dictionary.py` |
 | Stub lemma list | live; hand-curated ~300 words for fallback / tests | `backend/data/stub_lemmas.tsv` |
-| Real dictionary pipeline | live; 42,856 lemmas from L–S 2011 (Freq2011.zip) with yo-recovery | `backend/scripts/build_dictionary.py` |
+| Real dictionary pipeline | live; 42,775 lemmas from L–S 2011 (Freq2011.zip), yo-recovery, folding rules | `backend/scripts/build_dictionary.py` |
 | Overrides | live; YAML include/exclude/aliases; 27 seeded excludes; ё-normalized at load; aliases loaded but unused | `backend/src/rsb/overrides.py`, `backend/data/overrides.yaml` |
+| Folding rules (per-POS) | live; reflexive aliases (X↔X+ся) + 3 merger rules with top-parse + POS + 20-ipm guards; 2,893 aliases + 81 mergers; see [`docs/folding-rules.md`](docs/folding-rules.md) | `backend/src/rsb/folds.py`, `backend/data/fold-report.md` |
 | Scoring + ranks | live; planning-doc table | `backend/src/rsb/scoring.py` |
 | Puzzle generator | live; constraint-checked; deterministic under seed; `top_n` difficulty knob; **form-level fitness** | `backend/src/rsb/generator.py` |
-| Lemma store (SQLite, read-only at runtime) | live; `lemmas` table (schema v2 with `form_masks`) — baked into the Docker image | `backend/src/rsb/store.py` |
+| Lemma store (SQLite, read-only at runtime) | live; `lemmas` + `aliases` tables (schema v3) — baked into the Docker image | `backend/src/rsb/store.py` |
 | State store (puzzles; future: scores) | live; Protocol with two impls (`LocalSqliteStateStore` for dev, `TursoStateStore` for prod) selected by env vars | `backend/src/rsb/state_store.py` |
 | FastAPI server | live; 5 endpoints under `/api`; serves the built Svelte SPA at `/` when `./static/` exists | `backend/src/rsb/api.py` |
 | Svelte 5 frontend | live; full play loop in browser; difficulty selector | `frontend/src/` |
 | HF Space deploy | live at https://ajgazin-russian-spelling-bee.hf.space; multi-stage Dockerfile; `scripts/deploy_hf.sh` for one-command redeploy | `Dockerfile`, `scripts/deploy_hf.sh`, `docs/deploy-huggingface.md` |
-| Tests | 65 passing | `backend/tests/*.py` |
+| Tests | 73 passing | `backend/tests/*.py` |
 | UX polish (final pass) | **partial — see "Open UX work" below** | `frontend/src/lib/*.svelte` |
 
 ---
@@ -62,7 +63,7 @@ Not yet implemented: per-letter frequency floors that guarantee rare letters (Ф
 
 ## Dictionary
 
-**Real pipeline live.** `backend/scripts/build_dictionary.py` fetches `Freq2011.zip` from `dict.ruslang.ru`, extracts `freqrnc2011.csv` (Lyashevskaya–Sharov 2011 update), parses, filters, and writes 42,856 lemmas to the `lemmas` table in `backend/data/rsb.db`. The API auto-prefers the DB-backed dictionary on startup; if the `lemmas` table is empty it falls back to `backend/data/stub_lemmas.tsv` (~300 hand-curated rows kept for tests and fresh-checkout fallback).
+**Real pipeline live.** `backend/scripts/build_dictionary.py` fetches `Freq2011.zip` from `dict.ruslang.ru`, extracts `freqrnc2011.csv` (Lyashevskaya–Sharov 2011 update), parses, filters, applies overrides, applies folding rules, and writes 42,775 lemmas + 2,893 lemma→lemma aliases into the `lemmas` and `aliases` tables in `backend/data/rsb.db`. The API auto-prefers the DB-backed dictionary on startup; if the `lemmas` table is empty it falls back to `backend/data/stub_lemmas.tsv` (~300 hand-curated rows kept for tests and fresh-checkout fallback).
 
 Filters applied at build time:
 - Frequency ≥ 0.5 ipm
@@ -72,7 +73,20 @@ Filters applied at build time:
 - pymorphy3 must round-trip the lemma to itself (yo-aware: if raw → pymorphy normal_form differs only by ё↔е and the ё-form round-trips, the row is rewritten to that ё-form before the freq-sum dedup)
 - Proper nouns dropped via pymorphy3 grammeme check (Geox, Surn, Patr, Name, Init, Trad, Orgn)
 
-The yo-recovery step rescued ~1,200 common nouns (incl. `ребёнок`, `ёлка`, `лёд`, `весёлый`, `чёрный`) that the source spells without ё. Overrides are pre-applied at build time (`apply_to_rows` runs against pymorphy-normalized rows), so the on-disk count *is* the live count — **42,856 lemmas**.
+The yo-recovery step rescued ~1,200 common nouns (incl. `ребёнок`, `ёлка`, `лёд`, `весёлый`, `чёрный`) that the source spells without ё. Overrides are pre-applied at build time (`apply_to_rows` runs against pymorphy-normalized rows), then folding rules run. The on-disk count *is* the live count — **42,775 lemmas + 2,893 aliases**.
+
+---
+
+## Folding rules
+
+After overrides and before the SQLite write, `rsb.folds.compute_folds` applies four per-POS rules:
+
+1. **Reflexive alias** (`X+ся ↔ base`) — both directions, gated by `pymorphy3.dictionary.word_is_known` so we don't add aliases for morphologically-generated-but-not-real partner verbs. Today: 2,893 aliases (424 base→reflexive incl. **`наедать → наедаться`**, 2,469 reflexive→base).
+2. **Participle merger** (`PRTF lemma → parent verb`) — drops ADJF lemmas whose top pymorphy3 parse is PRTF→verb-in-dict, with freq < 20 ipm. Today: 81 mergers; 7 candidates protected by the freq cutoff (e.g. `соответствующий`, `действующий`).
+3. **Short adjective merger** (`ADJS lemma → parent ADJF`) — same shape; 0 mergers today (L–S doesn't ship pure short-form lemmas), 1 protected (`намерен`).
+4. **Comparative merger** (`COMP lemma → parent ADJF`) — same shape; 0 mergers today (no L–S COMP lemmas at all).
+
+Every build writes a human-readable diff at `backend/data/fold-report.md`. The full rationale (what ships, what doesn't, and how to judge a new rule without being a linguist) lives in [`docs/folding-rules.md`](docs/folding-rules.md).
 
 ---
 
@@ -102,8 +116,9 @@ Implemented in `backend/src/rsb/lemmatizer.py`. Returns `Resolution(status, lemm
   - `unparseable`: pymorphy3 returned no parses at all.
   - `already_found`: the resolved lemma is already in the caller's `found_lemmas`.
 - In `not_in_set` we also check whether any candidate parse matches an already-found lemma and reclassify to `already_found` for friendlier UX.
+- **Alias fallback (folding rules):** if no parse's normal_form is in the valid set, each candidate's lemma→lemma alias (loaded from the `aliases` table at startup) is also checked. This is the path that makes a player typing *наедал* — pymorphy3-lemmatized to *наедать*, not in L–S — credit *наедаться* via the reflexive alias. See [`docs/folding-rules.md`](docs/folding-rules.md).
 
-Lemma-rule edge cases from the planning doc (aspect pairs, reflexive -ся, diminutives, etc.) are honored *implicitly* by the dictionary — whatever lemmas the compiled dictionary contains, are valid; filtering happens in `build_dictionary.py` and `overrides.yaml`.
+Lemma-rule edge cases from the planning doc (aspect pairs, reflexive -ся, diminutives, etc.) are honored either by the dictionary (whatever lemmas it contains are valid; filtered in `build_dictionary.py` + `overrides.yaml`) or by the folding rules (which add alias fallbacks and merge participle/short/comp variants into their parent lemma).
 
 ---
 

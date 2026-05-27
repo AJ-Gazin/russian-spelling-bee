@@ -45,8 +45,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rsb.alphabet import HIVE_LETTERS, canonical_lemma, letter_mask  # noqa: E402
 from rsb.dictionary import compute_form_masks  # noqa: E402
+from rsb.folds import compute_folds, report_markdown  # noqa: E402
 from rsb.overrides import apply_to_rows, load as load_overrides, normalize as normalize_overrides  # noqa: E402
-from rsb.store import open_db, replace_lemmas  # noqa: E402
+from rsb.store import open_db, replace_aliases, replace_lemmas  # noqa: E402
 
 # Try-import here keeps the script reportable when pymorphy3 isn't installed.
 try:
@@ -232,13 +233,29 @@ def build(
     before = len(final)
     final = apply_to_rows(final, ov, morph=morph)
     print(f"  overrides: include={len(ov.include)} exclude={len(ov.exclude)} net change: {len(final) - before:+d}")
+
+    # Step 2.75: apply folding rules (reflexive aliases + participle/short-adj/
+    # comparative mergers). See `rsb/folds.py` and `docs/folding-rules.md`.
+    before = len(final)
+    final, aliases, fold_report = compute_folds(final, morph)
+    n_alias = len(aliases)
+    n_merge = len(fold_report.mergers_applied)
+    n_protected = len(fold_report.mergers_protected_by_freq)
+    print(
+        f"  folds: aliases={n_alias}  mergers_applied={n_merge}  "
+        f"protected_by_freq={n_protected}  net lemma change: {len(final) - before:+d}"
+    )
+    report_path = BACKEND_ROOT / "data" / "fold-report.md"
+    report_path.write_text(report_markdown(fold_report), encoding="utf-8")
+    print(f"  fold report -> {report_path}")
     print(f"  final count: {len(final)}")
 
-    # Step 3: write to DB.
+    # Step 3: write to DB (lemmas + aliases).
     print(f"  writing to {db_path} ...")
     conn = open_db(db_path)
     try:
         replace_lemmas(conn, final)
+        replace_aliases(conn, aliases)
     finally:
         conn.close()
     return len(final)

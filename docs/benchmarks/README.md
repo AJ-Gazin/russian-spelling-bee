@@ -48,6 +48,8 @@ Newest first. Each row links to the run's `report.md`.
 
 | Date | Strategy | n/preset | Dict size | Headline finding |
 |---|---|---|---|---|
+| 2026-05-26 | [folds-v1](runs/2026-05-26-folds-v1/report.md) | 50 | 42,775 (`9813284ce0af`) | Per-POS folding rules shipped (reflexive alias + 3 mergers; see [`docs/folding-rules.md`](../folding-rules.md)). Generation behavior virtually identical to v2 — avg word length and lemmas/puzzle within ±0.7. Expected: the 81 mergers are low-freq and aliases don't affect generation, only lookup acceptance (which doesn't show up in these benchmarks). |
+| 2026-05-26 | [form-fitness-v2](runs/2026-05-26-form-fitness-v2/report.md) | 50 | 42,856 (`d3782febd7a8`) | Yo-recovery baseline (+1,150 lemmas vs v1). Avg word length and lemmas/puzzle effectively unchanged from v1; the new ё-lemmas didn't shift puzzle shape because Ё is folded to Е for hive composition. |
 | 2026-05-26 | [form-fitness-v1](runs/2026-05-26-form-fitness-v1/report.md) | 50 | 41,706 (`94e4567f8776`) | Avg word length 5.98–6.19 across all presets (essentially flat). Per-puzzle counts 14 / 31 / 43 / 49 — Лёгкий below NYT-equivalent floor; Сложный hits NYT pangram-rate (1.6) on the nose. |
 
 ### Adding a new entry

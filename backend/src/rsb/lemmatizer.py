@@ -16,6 +16,12 @@ The lemmatizer is also consulted on misses to classify the rejection reason:
 - `unparseable`: pymorphy3 returned no parses, or only parses to forms that
   themselves don't look like real Russian words (rare; we treat any parse as
   "at least typed something morphologically").
+
+Optional `aliases` map (lemma → lemma) is applied as a *final fallback*:
+when no parse's normal_form is in the valid set, each candidate's alias is
+also checked. This is how the reflexive folding rule (`rsb.folds`) makes
+*наедал* → `наедать` (pymorphy3) → `наедаться` (alias) → accepted resolve
+when `наедать` isn't in L–S but its reflexive partner is.
 """
 
 from __future__ import annotations
@@ -45,10 +51,21 @@ class Lemmatizer:
 
     Construct once and reuse — analyzer initialization loads ~30MB of dictionary
     data and takes ~200ms.
+
+    `aliases` (optional) is a lemma→lemma map consulted as a final fallback
+    when no parse's normal_form is in the valid set. Produced by the build
+    pipeline's folding rules (see `rsb.folds`). Empty by default — when empty
+    the resolve path is byte-identical to the pre-folding behavior.
     """
 
-    def __init__(self, analyzer: pymorphy3.MorphAnalyzer | None = None):
+    def __init__(
+        self,
+        analyzer: pymorphy3.MorphAnalyzer | None = None,
+        *,
+        aliases: dict[str, str] | None = None,
+    ):
         self._morph = analyzer or pymorphy3.MorphAnalyzer()
+        self._aliases: dict[str, str] = aliases or {}
 
     def parses_for(self, form: str) -> list[pymorphy3.analyzer.Parse]:
         """All pymorphy3 parses for the (folded, lowercased) input."""
@@ -104,4 +121,12 @@ class Lemmatizer:
                         first_hit = hit
         if first_hit is not None:
             return Resolution(status="accepted", lemma=first_hit, candidates=tuple(candidates))
+        # Final fallback: lemma→lemma aliases from folding rules. Walks
+        # candidates in pymorphy3-score order, so the highest-scoring parse
+        # whose alias is in the valid set wins.
+        if self._aliases:
+            for cand in candidates:
+                tgt = self._aliases.get(cand)
+                if tgt is not None and tgt in valid:
+                    return Resolution(status="accepted", lemma=tgt, candidates=tuple(candidates))
         return Resolution(status="not_in_set", candidates=tuple(candidates))

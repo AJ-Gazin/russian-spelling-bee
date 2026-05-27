@@ -32,22 +32,24 @@ Small backend items that aren't blocking but should be revisited:
 - [ ] Per-letter rare-letter floors (Ф Ц Щ Э rotation guarantees) — currently best-effort via frequency weights only
 - [ ] Lemmatizer consults `aliases` from `overrides.yaml` — currently the section is loaded but unused (no real-world hits today; trivial to plumb when needed)
 - [ ] **Difficulty future:** custom-N input for power users (presets only today)
-- [ ] **Generator calibration after form-fitness:** the form-level fitness rule (a lemma is admitted if any of its inflected forms fits the hive) admits more lemmas per hive than the old citation-form rule. Re-tune `min_lemmas` / `max_lemmas` bands and `top_n` preset thresholds once we have play data on real puzzles. The yo-recovery fix also added ~1,200 lemmas; re-run `backend/scripts/sample_puzzles.py` for a `form-fitness-v2` baseline before re-tuning.
+- [ ] **Generator calibration after form-fitness:** the form-level fitness rule (a lemma is admitted if any of its inflected forms fits the hive) admits more lemmas per hive than the old citation-form rule. Re-tune `min_lemmas` / `max_lemmas` bands and `top_n` preset thresholds once we have play data on real puzzles. Two baselines exist now: `2026-05-26-form-fitness-v2` (post yo-recovery, pre folds) and `2026-05-26-folds-v1` (post folds). The folds rule had near-zero impact on puzzle shape (mergers are below the preset top-N thresholds for the most part); aliases are invisible at generation time but affect lookup acceptance.
 
 ---
 
-## Per-POS folding rules (deferred)
+## Per-POS folding rules
 
-The form-fitness rule (post-implementation) accepts any inflected form of a lemma. Separate from that — and still open — is **how aggressively to fold related lemmas into one entry** before they reach the puzzle. Each item below is a calibration question, not a blocker.
+Full writeup of what ships, what doesn't, and how to judge a new rule without being a linguist: [`docs/folding-rules.md`](docs/folding-rules.md). Per-build diff at `backend/data/fold-report.md`.
 
-- [ ] **Participles → parent verb vs standalone adjective.** pymorphy3 lemmatizes *пишущий* as its own ADJF lemma, not as a form of *писать*. Decide whether to merge active/passive participles into their parent verb (so finding *пишущий* counts as finding *писать*) or keep them as distinct entries.
-- [ ] **Aspect pairs.** *читать* / *прочитать*, *делать* / *сделать* are separate lemmas. Many pairs differ only by a semantically-vacuous prefix and feel like one verb to players. Decide which prefixes (по-, про-, с-, на-, …) collapse and which preserve a meaning distinction.
-- [ ] **Reflexives.** *мыть* / *мыться*, *учить* / *учиться*. Almost always semantically distinct (transitive vs reflexive); recommend keeping separate, but worth confirming on real data. **Concrete known miss:** the L–S source lists `наедаться` / `наесться` (reflexive imperfective/perfective) but not the transitive imperfective `наедать`, so typing *наедал* falls through with `not_in_set` even though the reflexive partner is in the puzzle. A reflexive-folding rule (`X+ся ↔ X`) would fix this.
-- [ ] **Adjective short forms.** *красив* (short) vs *красивый* (long). pymorphy3 may produce *красив* as its own lemma in some parses. Decide whether short forms collapse into long forms always.
-- [ ] **Comparatives & superlatives.** *красивее* (comparative), *красивейший* (synthetic superlative). Often have their own headwords in some dictionaries. Decide whether to collapse.
-- [ ] **Diminutives.** *кот* / *котик*, *дом* / *домик*. Probably keep separate (semantically distinct), but the diminutive overrides file already curates some of these — audit.
+- [x] **Participles → parent verb.** Top-parse PRTF + candidate POS=ADJF + parent VERB in dict + freq < 20 ipm. 81 merged today; 7 protected by cutoff. Lexicalized participles (`бывший`, `следующий`, `текущий`, `грядущий`, `будущий`) automatically excluded because pymorphy3 ranks them as ADJF at top.
+- [x] **Reflexives** (`X+ся ↔ X`). Bidirectional alias, gated by `pymorphy3.dictionary.word_is_known` so we don't add aliases for partner verbs pymorphy3 over-generates. 2,893 aliases today (424 base→reflexive incl. **`наедать → наедаться`**, 2,469 reflexive→base). The `наедал` regression is closed.
+- [x] **Adjective short forms.** Top-parse ADJS + candidate POS=ADJF + parent ADJF in dict + freq < 20 ipm. 0 mergers today (L–S doesn't ship pure short-form lemmas); 1 protected (`намерен`). Watchdog rule for future data.
+- [x] **Synthetic comparatives.** Top-parse COMP + candidate POS=COMP + parent ADJF in dict. 0 mergers today (L–S has zero COMP lemmas; high-freq comparatives like `больше` are tagged ADVB and protected by the candidate-POS gate). Watchdog rule.
+- [-] **Aspect pairs.** *читать* / *прочитать*, *делать* / *сделать*. Deferred. No mechanical prefix rule cleanly separates "vacuous aspectual prefix" from "prefix with semantic load," and suppletive pairs (*говорить* / *сказать*) would need a curated table. See `docs/folding-rules.md`. Revisit if play-data shows players consistently expecting one to credit the other.
+- [-] **Productive prefix folding.** Generally unsafe (`наедать` ≠ `есть`, `припомнить` ≠ `помнить`). If dictionary coverage is the real issue, the right tool is a richer frequency source (OpenCorpora-corpus union experiment), not prefix collapsing.
+- [-] **Verbal nouns (`-ние` / `-тие`).** Often lexicalize (*понимание* "understanding") so wholesale folding loses nuance. Revisit per play-data.
+- [-] **Diminutives.** Curated case-by-case in `overrides.yaml exclude:` (27 entries today). Rule-based folding would over-merge; per-word judgment is correct here.
 
-A reasonable approach: write a folding script that walks the lemma table, proposes merges by rule, dumps a YAML diff for human review (yes/no/keep), and applies accepted merges as an `aliases` extension to `overrides.yaml`. Defers the linguistic judgment to a one-time editorial pass rather than baking it into the build pipeline.
+A reasonable approach for new fold proposals: pick a rule that fits the three-guard template (top-parse + candidate-POS gate + freq cutoff), add a test in `tests/test_folds.py` with both a positive case and a tricky-negative case, run the build, eyeball `data/fold-report.md`, ship.
 
 ---
 
@@ -83,14 +85,15 @@ A reasonable approach: write a folding script that walks the lemma table, propos
 - [x] Intersects L–S lemmas with OpenCorpora via pymorphy3 round-trip check
 - [x] Filters ≥0.5 ipm; closed-class POS, hyphenated, non-alphabet, proper nouns all dropped
 - [x] **Yo-recovery:** `alphabet.canonical_lemma` rewrites raw freq-list lemmas the source spells without ё (e.g. `ребенок` 658 ipm) to pymorphy3's ё-form before the freq-sum dedup; rescued ~1,200 lemmas including `ребёнок`, `ёлка`, `лёд`, `весёлый`, `чёрный`
-- [x] Writes compiled lemma table to SQLite (42,856 rows from L–S 2011)
+- [x] **Folding rules** (`rsb.folds`): reflexive alias + 3 merger rules; 2,893 aliases + 81 mergers; schema bumped to v3 with new `aliases` table; see [`docs/folding-rules.md`](docs/folding-rules.md)
+- [x] Writes compiled lemma table + aliases table to SQLite (42,775 rows + 2,893 aliases from L–S 2011)
 - [x] API auto-prefers DB-backed dictionary when present; falls back to stub TSV
 
 ### Overrides
 - [x] `backend/data/overrides.yaml` with `include` / `exclude` / `aliases`; seeded with 27 diminutives
 - [x] `overrides.py`: `apply_to_rows` (build script) + `apply_to_dictionary` (API startup)
 - [x] `normalize()` routes include/exclude/alias-values through `canonical_lemma` so authors can spell entries with or without ё
-- [x] Live dictionary holds 42,856 lemmas after overrides (overrides pre-applied at build time)
+- [x] Live dictionary holds 42,775 lemmas after overrides + folding (both pre-applied at build time)
 
 ### Dynamic difficulty (top-N)
 - [x] `top_n` field on `GeneratorConfig`; `generate()` filters the dictionary to top-N by freq before sampling

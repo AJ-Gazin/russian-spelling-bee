@@ -126,7 +126,13 @@ async def lifespan(_app: FastAPI):
              len(overrides.include), len(overrides.exclude),
              len(_state.dictionary) - before, len(_state.dictionary))
 
-    _state.lemmatizer = Lemmatizer(analyzer=morph)
+    # Load lemma→lemma aliases (produced by `rsb.folds` at dict build time).
+    # Empty when the build script hasn't been re-run since folds shipped —
+    # the lemmatizer falls back to its pre-folding behavior in that case.
+    aliases = store.load_aliases(_state.db)
+    if aliases:
+        log.info("aliases: %d lemma→lemma entries from folding rules", len(aliases))
+    _state.lemmatizer = Lemmatizer(analyzer=morph, aliases=aliases)
 
     # Mutable game state (puzzles, future scores). Picks Turso if
     # TURSO_DATABASE_URL+TURSO_AUTH_TOKEN are set; otherwise local SQLite.
