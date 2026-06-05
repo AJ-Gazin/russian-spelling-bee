@@ -94,7 +94,13 @@ def _puzzle_to_json(p: Puzzle) -> str:
 
 def _puzzle_from_payload(payload: str) -> Puzzle:
     raw = json.loads(payload)
-    lemmas = tuple(ScoredLemma(**l) for l in raw["lemmas"])
+    # `forms` round-trips through JSON as a list; coerce back to a tuple to
+    # match ScoredLemma's declared shape. Older payloads (pre-forms) omit the
+    # key entirely, in which case the field default applies.
+    lemmas = tuple(
+        ScoredLemma(**{**l, "forms": tuple(l.get("forms", ()))})
+        for l in raw["lemmas"]
+    )
     th = raw["thresholds"]
     thresholds = RankThresholds(
         total_points=th["total_points"],

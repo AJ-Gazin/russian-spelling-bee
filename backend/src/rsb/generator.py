@@ -54,6 +54,12 @@ class ScoredLemma:
     length: int
     points: int
     is_pangram: bool
+    # The lemma's inflected forms that are constructible from THIS hive (subset
+    # of the 7 letters ∧ contains the center) — i.e. the exact spellings a
+    # player can type. Surfaced in the answer key as a learning aid, because
+    # the citation form (`lemma`) may not itself fit the hive. Ordered shortest
+    # first, then alphabetically.
+    forms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +120,7 @@ def _count_vowels(letters: Iterable[str]) -> int:
     return sum(1 for c in letters if c in VOWELS)
 
 
-def _score_lemmas(lemmas: list[Lemma], hive_mask_: int) -> list[ScoredLemma]:
+def _score_lemmas(lemmas: list[Lemma], hive_mask_: int, center_bit: int) -> list[ScoredLemma]:
     out: list[ScoredLemma] = []
     for l in lemmas:
         # 4-letter minimum: short lemmas remain in the dictionary (so the
@@ -127,6 +133,17 @@ def _score_lemmas(lemmas: list[Lemma], hive_mask_: int) -> list[ScoredLemma]:
         # the citation form itself (a recognizable word), not an obscure
         # inflection that happens to use all 7 letters.
         pangram = is_pangram(l.mask, hive_mask_)
+        # The forms a player can actually type for this hive: a subset of the
+        # 7 letters AND containing the center. Falls back to the citation form
+        # for hand-built Lemmas that carry no `forms` (older test fixtures).
+        source_forms = l.forms or (l.lemma,)
+        fitting_forms = tuple(sorted(
+            (
+                w for w in source_forms
+                if (letter_mask(w) & ~hive_mask_) == 0 and (letter_mask(w) & center_bit) != 0
+            ),
+            key=lambda w: (len(w), w),
+        ))
         out.append(
             ScoredLemma(
                 lemma=l.lemma,
@@ -135,6 +152,7 @@ def _score_lemmas(lemmas: list[Lemma], hive_mask_: int) -> list[ScoredLemma]:
                 length=len(l.lemma),
                 points=points_for(l.lemma, is_pangram=pangram),
                 is_pangram=pangram,
+                forms=fitting_forms,
             )
         )
     return out
@@ -187,7 +205,7 @@ def generate(dictionary: Dictionary, cfg: GeneratorConfig | None = None) -> Puzz
         for center in centers_to_try:
             cb = letter_bit(center)
             fitting = dictionary.lemmas_fitting(hm, cb)
-            scored = _score_lemmas(fitting, hm)
+            scored = _score_lemmas(fitting, hm, cb)
             if _accept(hive_str, center, scored, cfg):
                 # Convention: letters[0] is the center.
                 ordered_letters = center + "".join(c for c in letters if c != center)

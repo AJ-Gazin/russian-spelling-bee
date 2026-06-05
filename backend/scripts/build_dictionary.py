@@ -44,7 +44,7 @@ from typing import Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rsb.alphabet import HIVE_LETTERS, canonical_lemma, letter_mask  # noqa: E402
-from rsb.dictionary import compute_form_masks  # noqa: E402
+from rsb.dictionary import compute_forms  # noqa: E402
 from rsb.folds import compute_folds, report_markdown  # noqa: E402
 from rsb.overrides import apply_to_rows, load as load_overrides, normalize as normalize_overrides  # noqa: E402
 from rsb.store import open_db, replace_aliases, replace_lemmas  # noqa: E402
@@ -203,9 +203,9 @@ def build(
     print(f"    yo-recovered (raw→ё):        {yo_recovered}")
     print(f"    distinct lemmas kept:        {len(candidates)}")
 
-    # Step 2: pymorphy3 round-trip + proper-noun filter + form-mask enumeration.
+    # Step 2: pymorphy3 round-trip + proper-noun filter + form enumeration.
     print("  validating against pymorphy3 + enumerating forms ...")
-    final: list[tuple[str, str, float, int, frozenset[int]]] = []
+    final: list[tuple[str, str, float, int, frozenset[str]]] = []
     dropped_unknown, dropped_proper = 0, 0
     for i, (lemma, (pos_label, freq)) in enumerate(candidates.items()):
         if progress_every and i and i % progress_every == 0:
@@ -216,13 +216,13 @@ def build(
         if pos_label == "NOUN" and is_proper_noun(morph, lemma):
             dropped_proper += 1
             continue
-        form_masks = compute_form_masks(morph, lemma)
-        final.append((lemma, pos_label, round(freq, 3), letter_mask(lemma), form_masks))
+        forms = compute_forms(morph, lemma)
+        final.append((lemma, pos_label, round(freq, 3), letter_mask(lemma), forms))
 
     print(f"    dropped by pymorphy3 unknown: {dropped_unknown}")
     print(f"    dropped by proper-noun:       {dropped_proper}")
     avg_forms = (sum(len(r[4]) for r in final) / len(final)) if final else 0.0
-    print(f"    avg distinct form-masks/lemma: {avg_forms:.1f}")
+    print(f"    avg distinct forms/lemma:     {avg_forms:.1f}")
 
     # Step 2.5: apply manual overrides (include/exclude). Normalize ё in
     # include/exclude keys so authors can write `exclude: [ребенок]` without

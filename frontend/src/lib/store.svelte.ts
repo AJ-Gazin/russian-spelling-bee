@@ -21,6 +21,10 @@ export interface Toast {
   lemma?: string;
   points?: number;
   isPangram?: boolean;
+  // POS of the accepted lemma (NOUN/VERB/…) — shown to distinguish homonyms.
+  pos?: string;
+  // The typed string maps to another unfound homonym — prompt "enter it again".
+  homonymRemaining?: boolean;
   // Auto-incremented so Svelte sees a "new" toast even if message is identical.
   seq: number;
 }
@@ -45,6 +49,10 @@ class GameState {
   error = $state<string | null>(null);
   toast = $state<Toast | null>(null);
   feedback = $state<Feedback | null>(null);
+  // When a homonym remains after an accepted guess, we stash the typed string
+  // here so the Input can refill itself — the player just presses Enter again
+  // to claim the next meaning. Cleared by the Input once consumed.
+  replayForm = $state<string | null>(null);
 
   // Derived: total points scored.
   score = $derived(this.computeScore());
@@ -133,7 +141,12 @@ class GameState {
           lemma,
           points: res.points ?? 0,
           isPangram: !!res.is_pangram,
+          pos: res.pos ?? undefined,
+          homonymRemaining: !!res.homonym_remaining,
         });
+        // Homonym cycling: the same spelling still hides another word. Refill
+        // the input so the player can press Enter again to claim it.
+        if (res.homonym_remaining) this.replayForm = form;
         return;
       }
       case "already_found":

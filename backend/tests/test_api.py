@@ -69,14 +69,39 @@ def test_guess_accepted_and_already_found(client):
     assert j["lemma"] == target["lemma"]
     assert j["points"] == target["points"]
 
-    # Now repeat with the lemma already in found_lemmas.
-    r2 = client.post(
-        f"/api/puzzle/{pid}/guess",
-        json={"form": form, "found_lemmas": [target["lemma"]]},
-    )
-    assert r2.status_code == 200
-    assert r2.json()["status"] == "already_found"
-    assert r2.json()["lemma"] == target["lemma"]
+    # Re-submit the same string, accumulating found lemmas. If the string is a
+    # homonym it cycles through the other in-set meanings (each accepted once,
+    # always a new lemma); once all reachable meanings are found it must report
+    # already_found. This exercises both the cycling and already_found paths.
+    found = [j["lemma"]]
+    for _ in range(6):
+        rr = client.post(
+            f"/api/puzzle/{pid}/guess",
+            json={"form": form, "found_lemmas": found},
+        ).json()
+        if rr["status"] == "accepted":
+            assert rr["lemma"] not in found, "cycling must yield a new lemma"
+            found.append(rr["lemma"])
+        else:
+            assert rr["status"] == "already_found"
+            assert rr["lemma"] in found
+            break
+    else:
+        pytest.fail("never converged to already_found after cycling")
+
+
+def test_puzzle_lemmas_include_constructible_forms(client):
+    cur = client.get("/api/puzzle/current").json()
+    letters = set(cur["letters"])
+    center = cur["center"]
+    for l in cur["lemmas"]:
+        assert "forms" in l and l["forms"], f"{l['lemma']}: missing forms in API payload"
+        for w in l["forms"]:
+            # Every advertised form is built from the hive letters (Ё folds to Е)
+            # and contains the center.
+            folded = w.replace("ё", "е")
+            assert set(folded) <= letters, f"{l['lemma']}: form {w} escapes the hive"
+            assert center in folded, f"{l['lemma']}: form {w} lacks the center"
 
 
 def test_guess_not_in_set(client):

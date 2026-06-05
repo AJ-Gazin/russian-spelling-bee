@@ -16,6 +16,10 @@ export interface ScoredLemma {
   length: number;
   points: number;
   is_pangram: boolean;
+  // Inflected forms constructible from this hive (the exact spellings a player
+  // can type). The citation form may not itself fit, so this is the learning
+  // payload shown in the answer key. Ordered shortest-first.
+  forms: string[];
 }
 
 export interface Thresholds {
@@ -46,6 +50,27 @@ export interface GuessResponse {
   points?: number | null;
   is_pangram?: boolean | null;
   candidates?: string[];
+  // POS of the accepted lemma (NOUN/VERB/…) — used to label homonyms.
+  pos?: string | null;
+  // When true, the same typed string still reaches another unfound homonym;
+  // the UI invites the player to enter it again to cycle to it.
+  homonym_remaining?: boolean;
+}
+
+// Short Russian POS abbreviations for display (homonym disambiguation).
+const POS_LABELS: Record<string, string> = {
+  NOUN: "сущ.",
+  VERB: "гл.",
+  ADJF: "прил.",
+  ADVB: "нареч.",
+  NUMR: "числ.",
+  PRED: "предик.",
+  COMP: "сравн.",
+};
+
+export function posLabel(pos: string | null | undefined): string {
+  if (!pos) return "";
+  return POS_LABELS[pos] ?? pos.toLowerCase();
 }
 
 const BASE = "/api";

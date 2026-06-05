@@ -2,7 +2,7 @@
 
 **This file is the canonical description of what is actually live on this branch.** When behavior changes, update this file in the same change. Stale `STATUS.md` is a bug. The original planning document at [`docs/original-design.md`](docs/original-design.md) is preserved as a frozen reference; where the two diverge, `STATUS.md` wins. The active work queue is [`todo.md`](todo.md). Empirical numbers per generation strategy live in [`docs/benchmarks/`](docs/benchmarks/README.md) — run `backend/scripts/sample_puzzles.py` to add a new entry whenever a generation/selection strategy changes.
 
-> **Last meaningful update:** **Per-POS folding rules (1–4) shipped.** Reflexive alias (`X ↔ X+ся`) and three merger rules (participle/short-adj/comparative → parent) live in `backend/src/rsb/folds.py`. Conservative guards: top-parse must be the folding tag, candidate POS must match what L–S thinks the word is, and `freq_ipm < 20` for mergers (lexicalized lemmas stay). Build pipeline writes 2,893 aliases + 81 mergers; the `наедал → наедаться` regression is gone. Schema bumped to v3 (new `aliases` table). See [`docs/folding-rules.md`](docs/folding-rules.md) for the rule-by-rule rationale, including the rules we deliberately *don't* ship (aspect pairs, productive prefixes, verbal nouns, diminutives). Previous focus carried forward: **UI/UX audit & polish** (separate session).
+> **Last meaningful update:** **Constructible forms in the answer key + homonym cycling.** (1) Inflected form *strings* are now stored per lemma (`lemmas.forms`, schema **v4**; `form_masks` derived from them at load). The generator records each lemma's hive-constructible forms on `ScoredLemma.forms`, the API returns them, and `AnswersModal.svelte` shows them under every headword — so a player looking up answers learns the *typeable* word (`линь`→`линя`, `лисёнок`→`лисят`), not an untypeable citation form. (2) `Lemmatizer.resolve` is now `found`-aware: a homographic string cycles through its in-set lemmas (`Resolution.reachable`), each earnable once; the guess response carries `pos` + `homonym_remaining`, and the UI refills the input + prompts "enter again" with a POS label. Previously shipped: per-POS folding rules (see [`docs/folding-rules.md`](docs/folding-rules.md)). **Deferred:** pangram findability/homonym-safety (Task 2 — see `todo.md`).
 
 ---
 
@@ -13,7 +13,7 @@
 | Project skeleton + docs | live | `README.md`, `STATUS.md`, `todo.md`, `docs/` |
 | Backend (Python 3.12, uv) | live | `backend/pyproject.toml` |
 | Alphabet + Ё/Е + bitmasks | live; includes yo-aware `canonical_lemma` helper | `backend/src/rsb/alphabet.py` |
-| Lemmatizer (pymorphy3 wrapper) | live; ambiguity rule + Ё/Е normalization (incl. defensive fallback) | `backend/src/rsb/lemmatizer.py` |
+| Lemmatizer (pymorphy3 wrapper) | live; ambiguity rule + Ё/Е normalization (incl. defensive fallback); **`found`-aware homonym cycling** | `backend/src/rsb/lemmatizer.py` |
 | Dictionary loader (TSV + DB) | live; loads from SQLite if populated, falls back to stub TSV | `backend/src/rsb/dictionary.py` |
 | Stub lemma list | live; hand-curated ~300 words for fallback / tests | `backend/data/stub_lemmas.tsv` |
 | Real dictionary pipeline | live; 42,775 lemmas from L–S 2011 (Freq2011.zip), yo-recovery, folding rules | `backend/scripts/build_dictionary.py` |
@@ -21,7 +21,7 @@
 | Folding rules (per-POS) | live; reflexive aliases (X↔X+ся) + 3 merger rules with top-parse + POS + 20-ipm guards; 2,893 aliases + 81 mergers; see [`docs/folding-rules.md`](docs/folding-rules.md) | `backend/src/rsb/folds.py`, `backend/data/fold-report.md` |
 | Scoring + ranks | live; planning-doc table | `backend/src/rsb/scoring.py` |
 | Puzzle generator | live; constraint-checked; deterministic under seed; `top_n` difficulty knob; **form-level fitness** | `backend/src/rsb/generator.py` |
-| Lemma store (SQLite, read-only at runtime) | live; `lemmas` + `aliases` tables (schema v3) — baked into the Docker image | `backend/src/rsb/store.py` |
+| Lemma store (SQLite, read-only at runtime) | live; `lemmas` (+ `forms` strings) + `aliases` tables (schema v4) — baked into the Docker image | `backend/src/rsb/store.py` |
 | State store (puzzles; future: scores) | live; Protocol with two impls (`LocalSqliteStateStore` for dev, `TursoStateStore` for prod) selected by env vars | `backend/src/rsb/state_store.py` |
 | FastAPI server | live; 5 endpoints under `/api`; serves the built Svelte SPA at `/` when `./static/` exists | `backend/src/rsb/api.py` |
 | Svelte 5 frontend | live; full play loop in browser; difficulty selector | `frontend/src/` |
@@ -106,17 +106,14 @@ Every build writes a human-readable diff at `backend/data/fold-report.md`. The f
 
 ## Lemma resolution
 
-Implemented in `backend/src/rsb/lemmatizer.py`. Returns `Resolution(status, lemma?, candidates)`:
+Implemented in `backend/src/rsb/lemmatizer.py`. `resolve(form, valid_lemmas, found=())` returns `Resolution(status, lemma?, candidates, reachable)`:
 
 - A player input is accepted iff **any** `pymorphy3` parse normalizes to a lemma in the puzzle's valid-lemma set.
-- When multiple parses qualify, the highest-`pymorphy3.score` parse wins (deterministic).
-- pymorphy3 already canonicalizes player Е→Ё internally (so *елка* parses to *ёлка*). We rely on that; lemmas are stored Ё-aware. A defensive `fold_yo` retry catches the rare case where a parse lemma differs from a valid-set entry only by ё↔е (e.g. a hand-curated stub spells a lemma without ё); when it fires, the resolved lemma is the *valid-set* spelling (so already-found dedup keeps working) and a warning is logged.
-- API surfaces three distinct rejection statuses plus `accepted`/`already_found`:
-  - `not_in_set`: parsed cleanly but no parse resolves to a puzzle lemma.
-  - `unparseable`: pymorphy3 returned no parses at all.
-  - `already_found`: the resolved lemma is already in the caller's `found_lemmas`.
-- In `not_in_set` we also check whether any candidate parse matches an already-found lemma and reclassify to `already_found` for friendlier UX.
-- **Alias fallback (folding rules):** if no parse's normal_form is in the valid set, each candidate's lemma→lemma alias (loaded from the `aliases` table at startup) is also checked. This is the path that makes a player typing *наедал* — pymorphy3-lemmatized to *наедать*, not in L–S — credit *наедаться* via the reflexive alias. See [`docs/folding-rules.md`](docs/folding-rules.md).
+- **Homonym cycling.** A typed string can map to several in-set lemmas (a homonym — e.g. *линял* → `линять`(гл.)/`линялый`(прил.); *стекла* → `стекло`/`стечь`). `resolve` collects **all** reachable in-set lemmas in `pymorphy3.score` order (`Resolution.reachable`) and returns the first one **not yet in `found`**. Re-entering the same string therefore walks to the next homonym, so each is separately earnable. When every reachable lemma is already found, status is `already_found`.
+- pymorphy3 already canonicalizes player Е→Ё internally (so *елка* parses to *ёлка*). We rely on that; lemmas are stored Ё-aware. A defensive `fold_yo` retry catches the rare case where a parse lemma differs from a valid-set entry only by ё↔е (e.g. a hand-curated stub spells a lemma without ё); when it fires, the resolved lemma is the *valid-set* spelling and a warning is logged.
+- Statuses: `accepted` (+ `reachable`), `already_found`, `not_in_set` (parsed cleanly but no parse resolves to a puzzle lemma), `unparseable` (pymorphy3 returned no parses).
+- The guess endpoint passes the client's `found_lemmas` as `found`, and sets `homonym_remaining` on the response when `reachable` still holds an unfound lemma after this accept — the UI uses it to prompt the player to enter the string again. POS of the accepted lemma is returned for homonym disambiguation in the UI.
+- **Alias fallback (folding rules):** lemma→lemma aliases (loaded from the `aliases` table at startup) extend `reachable` when a parse's normal_form isn't directly in the valid set. This is the path that makes a player typing *наедал* — pymorphy3-lemmatized to *наедать*, not in L–S — credit *наедаться* via the reflexive alias. See [`docs/folding-rules.md`](docs/folding-rules.md).
 
 Lemma-rule edge cases from the planning doc (aspect pairs, reflexive -ся, diminutives, etc.) are honored either by the dictionary (whatever lemmas it contains are valid; filtered in `build_dictionary.py` + `overrides.yaml`) or by the folding rules (which add alias fallbacks and merge participle/short/comp variants into their parent lemma).
 
@@ -143,11 +140,11 @@ Implemented in `backend/src/rsb/generator.py`:
 
 ### Form-level fitness rule
 
-A lemma belongs in the puzzle's answer list iff **at least one of its inflected forms** (length ≥ 4, alphabet-clean) has letters ⊆ hive AND contains the center. This is stored per-lemma as `Lemma.form_masks: frozenset[int]` — a set of 31-bit letter-set masks across all forms, precomputed at build time via pymorphy3's lexeme enumeration.
+A lemma belongs in the puzzle's answer list iff **at least one of its inflected forms** (length ≥ 4, alphabet-clean) has letters ⊆ hive AND contains the center.
 
-- **Why:** the citation form often carries a final ь (нощ → ночь, сет → сеть) or other letter that excludes it from a hive that perfectly admits its other forms. Citation-form-only fitness produced the "letters are right there but it doesn't count" trap.
-- **Pangram still uses `Lemma.mask`** (the citation form), so a flagged pangram is always a recognizable word, not an obscure participle that happens to use all 7 letters.
-- **Storage:** `lemmas.form_masks TEXT` — comma-separated decimal ints, populated by `build_dictionary.py` and read by `Dictionary.from_db`. Pre-v2 DBs migrate automatically on first read (~7s for 41k lemmas; one-time cost).
+- **Storage:** the inflected form *strings* (Ё-aware) are stored per lemma in `lemmas.forms TEXT` (comma-separated), enumerated at build time via pymorphy3's lexeme. `Lemma.form_masks: frozenset[int]` (the 31-bit letter-set masks used by the subset test) is **derived from those strings at load** — single source of truth, no drift. Legacy DBs without `forms` re-enumerate on first read (one-time). Schema is **v4**; the older `form_masks` column is retained for backward compat but no longer written.
+- **Why store the strings:** the citation form often carries a final ь (сеть, линь) or a letter outside the hive (лисёнок needs к) that the *other* forms don't — so the headword alone is untypeable. The answer key shows the **constructible forms** (`сети`, `линя`, `лисят`) as a learning aid. Per puzzle, the generator filters each lemma's forms to those that fit the hive (subset ∧ contains center) and stores them on `ScoredLemma.forms` (ordered shortest-first); the API returns them and `AnswersModal.svelte` renders them under each headword.
+- **Pangram still uses `Lemma.mask`** (the citation form), so a flagged pangram is always a recognizable word, not an obscure participle that happens to use all 7 letters. *(Pangram-findability/homonym-safety is a separate, deferred task — see `todo.md`.)*
 - **Calibration follow-up:** `min_lemmas`/`max_lemmas` bands and `top_n` thresholds will likely need re-tuning since more lemmas fit per hive — see `todo.md`.
 
 Two configs live in `api.py` and are selected at startup based on whether the DB dictionary is populated:
@@ -192,7 +189,7 @@ Implemented in `backend/src/rsb/api.py` (FastAPI). All routes are mounted on an 
 | GET | `/api/health` | — | `{status, state_store}`. Liveness + which state backend booted (`local-sqlite` vs `turso`). |
 | GET | `/api/puzzle/current` | — | Auto-generates one on first boot if the state store is empty. |
 | GET | `/api/puzzle/{id}` | — | 404 if not found. |
-| POST | `/api/puzzle/{id}/guess` | `{form, found_lemmas}` | Returns `{status, lemma?, points?, is_pangram?, candidates}`. |
+| POST | `/api/puzzle/{id}/guess` | `{form, found_lemmas}` | Returns `{status, lemma?, points?, is_pangram?, pos?, homonym_remaining, candidates}`. `homonym_remaining`=true ⇒ same string reaches another unfound homonym (re-submit to cycle). |
 | POST | `/api/admin/generate` | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | All fields optional; empty body uses server defaults. |
 
 `status` ∈ {`accepted`, `already_found`, `not_in_set`, `unparseable`}. Server-side per-player state is deferred; the client passes `found_lemmas` on every guess.

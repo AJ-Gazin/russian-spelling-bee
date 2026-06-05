@@ -15,7 +15,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -29,7 +29,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             pos        TEXT    NOT NULL,
             freq_ipm   REAL    NOT NULL,
             mask       INTEGER NOT NULL,
-            form_masks TEXT
+            form_masks TEXT,
+            forms      TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_lemmas_freq ON lemmas(freq_ipm);
         CREATE TABLE IF NOT EXISTS aliases (
@@ -40,11 +41,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_aliases_target ON aliases(target_lemma);
         """
     )
-    # Migration: add form_masks column to pre-v2 DBs. The aliases table is
-    # idempotently created above for pre-v3 DBs.
+    # Migrations: add form_masks (pre-v2) and forms (pre-v4) columns. The
+    # aliases table is idempotently created above for pre-v3 DBs. The legacy
+    # `form_masks` column is retained for old-DB compatibility but no longer
+    # written — `form_masks` is now derived from the `forms` strings at load.
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(lemmas)").fetchall()}
     if "form_masks" not in cols:
         conn.execute("ALTER TABLE lemmas ADD COLUMN form_masks TEXT")
+    if "forms" not in cols:
+        conn.execute("ALTER TABLE lemmas ADD COLUMN forms TEXT")
     cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
     row = cur.fetchone()
     if row is None:
@@ -54,14 +59,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _encode_form_masks(masks: frozenset[int] | set[int] | tuple[int, ...]) -> str:
-    return ",".join(str(m) for m in sorted(masks))
+def _encode_forms(forms: frozenset[str] | set[str] | tuple[str, ...]) -> str:
+    # Russian form strings never contain commas, so a comma join is safe.
+    return ",".join(sorted(forms))
 
 
-def _decode_form_masks(s: str | None) -> frozenset[int]:
+def _decode_forms(s: str | None) -> frozenset[str]:
     if not s:
         return frozenset()
-    return frozenset(int(x) for x in s.split(","))
+    return frozenset(s.split(","))
 
 
 def open_db(path: Path | str) -> sqlite3.Connection:
@@ -84,12 +90,13 @@ def count_lemmas(conn: sqlite3.Connection) -> int:
 
 def replace_lemmas(
     conn: sqlite3.Connection,
-    rows: list[tuple[str, str, float, int]] | list[tuple[str, str, float, int, frozenset[int]]],
+    rows: list[tuple[str, str, float, int]] | list[tuple[str, str, float, int, frozenset[str]]],
 ) -> None:
     """Truncate-and-insert. Each row is either (lemma, pos, freq_ipm, mask)
-    or (lemma, pos, freq_ipm, mask, form_masks). The 4-tuple form is accepted
-    for backwards compatibility — form_masks is then left NULL and migrated
-    on first read."""
+    or (lemma, pos, freq_ipm, mask, forms) where `forms` is the set of
+    inflected form *strings*. The 4-tuple form is accepted for backwards
+    compatibility — `forms` is then left NULL and re-enumerated on first read.
+    `form_masks` is derived from `forms` at load and is no longer written."""
     conn.execute("BEGIN")
     try:
         conn.execute("DELETE FROM lemmas")
@@ -98,10 +105,10 @@ def replace_lemmas(
             if len(row) == 4:
                 normalized.append((*row, None))
             else:
-                lemma, pos, freq, mask, fm = row
-                normalized.append((lemma, pos, freq, mask, _encode_form_masks(fm)))
+                lemma, pos, freq, mask, forms = row
+                normalized.append((lemma, pos, freq, mask, _encode_forms(forms)))
         conn.executemany(
-            "INSERT INTO lemmas(lemma, pos, freq_ipm, mask, form_masks) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO lemmas(lemma, pos, freq_ipm, mask, forms) VALUES (?, ?, ?, ?, ?)",
             normalized,
         )
         conn.execute("COMMIT")
@@ -111,29 +118,30 @@ def replace_lemmas(
 
 
 def iter_lemmas(conn: sqlite3.Connection):
-    """Yield (lemma, pos, freq_ipm, mask, form_masks) tuples. `form_masks` is
-    a frozenset[int] — empty if the column is NULL (pre-migration row)."""
-    for row in conn.execute("SELECT lemma, pos, freq_ipm, mask, form_masks FROM lemmas"):
+    """Yield (lemma, pos, freq_ipm, mask, forms) tuples. `forms` is a
+    frozenset[str] — empty if the column is NULL (legacy pre-v4 row, which
+    Dictionary.from_db then re-enumerates and writes back)."""
+    for row in conn.execute("SELECT lemma, pos, freq_ipm, mask, forms FROM lemmas"):
         yield (
             row["lemma"],
             row["pos"],
             row["freq_ipm"],
             row["mask"],
-            _decode_form_masks(row["form_masks"]),
+            _decode_forms(row["forms"]),
         )
 
 
-def update_form_masks_bulk(
+def update_forms_bulk(
     conn: sqlite3.Connection,
-    entries: list[tuple[str, frozenset[int]]],
+    entries: list[tuple[str, frozenset[str]]],
 ) -> None:
-    """Set form_masks for the given lemmas. Used by Dictionary.from_db to
-    persist the one-time migration of pre-v2 rows."""
+    """Set `forms` for the given lemmas. Used by Dictionary.from_db to persist
+    the one-time migration of legacy rows that predate stored form strings."""
     conn.execute("BEGIN")
     try:
         conn.executemany(
-            "UPDATE lemmas SET form_masks = ? WHERE lemma = ?",
-            [(_encode_form_masks(fm), lemma) for lemma, fm in entries],
+            "UPDATE lemmas SET forms = ? WHERE lemma = ?",
+            [(_encode_forms(f), lemma) for lemma, f in entries],
         )
         conn.execute("COMMIT")
     except Exception:

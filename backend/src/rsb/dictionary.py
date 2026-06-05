@@ -28,16 +28,21 @@ def _clean_word(word: str) -> bool:
     return all(ch in _ALPHABET_OK for ch in word.lower())
 
 
-def compute_form_masks(morph, lemma: str) -> frozenset[int]:
+def compute_forms(morph, lemma: str) -> frozenset[str]:
     """Enumerate inflected forms of `lemma` via pymorphy3 and return the set
-    of distinct letter-masks across forms with length ≥ MIN_WORD_LENGTH whose
-    characters all live in the 31-letter alphabet (Ё folded into Е).
+    of distinct form *strings* with length ≥ MIN_WORD_LENGTH whose characters
+    all live in the 31-letter alphabet (Ё allowed; folded to Е only for masks).
 
-    The lemma's own mask is always included if the lemma itself qualifies —
-    this is the safety net for the pangram-on-citation-form invariant and for
-    lemmas whose lexeme pymorphy3 fails to expand.
+    Form strings are kept Ё-aware (e.g. *тётя*, *сёстры*) so the answer key can
+    show players the exact spelling they should type — a learning aid, since a
+    lemma's citation form may not itself be constructible from the hive (the
+    сеть/сети trap).
+
+    The lemma's own form is always included if it qualifies — the safety net
+    for the pangram-on-citation-form invariant and for lemmas whose lexeme
+    pymorphy3 fails to expand.
     """
-    masks: set[int] = set()
+    words: set[str] = set()
     for parse in morph.parse(lemma):
         if parse.normal_form != lemma:
             continue
@@ -45,11 +50,24 @@ def compute_form_masks(morph, lemma: str) -> frozenset[int]:
             word = f.word.lower()
             if len(word) < MIN_WORD_LENGTH or not _clean_word(word):
                 continue
-            masks.add(letter_mask(word))
+            words.add(word)
         break
     if len(lemma) >= MIN_WORD_LENGTH and _clean_word(lemma):
-        masks.add(letter_mask(lemma))
-    return frozenset(masks)
+        words.add(lemma)
+    return frozenset(words)
+
+
+def masks_from_forms(forms: frozenset[str] | set[str] | tuple[str, ...]) -> frozenset[int]:
+    """Derive the set of distinct letter-set masks for a collection of form
+    strings (Ё folded into Е). This is what `lemmas_fitting` tests against."""
+    return frozenset(letter_mask(w) for w in forms)
+
+
+def compute_form_masks(morph, lemma: str) -> frozenset[int]:
+    """Enumerate inflected forms of `lemma` and return their distinct letter
+    masks. Thin wrapper over `compute_forms` kept for callers (e.g. the fold
+    tests' row builder) that only need masks."""
+    return masks_from_forms(compute_forms(morph, lemma))
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +76,13 @@ class Lemma:
     pos: str
     freq_ipm: float
     mask: int = field(compare=False)
+    # `form_masks` is derived from `forms` at load time (see `from_db` /
+    # `from_tsv`). It's stored as its own field — not a property — because
+    # `lemmas_fitting` reads it once per lemma per generation attempt and a
+    # recompute-on-access property would be a hot-loop tax.
     form_masks: frozenset[int] = field(default=frozenset(), compare=False)
+    # The inflected form *strings* (Ё-aware) used by the answer key.
+    forms: frozenset[str] = field(default=frozenset(), compare=False)
 
     @property
     def length(self) -> int:
@@ -100,12 +124,14 @@ class Dictionary:
                     freq = float(freq_s)
                 except ValueError as e:
                     raise ValueError(f"{path}:{lineno}: bad freq {freq_s!r}") from e
+                forms = compute_forms(morph, lemma)
                 rows.append(Lemma(
                     lemma=lemma,
                     pos=pos,
                     freq_ipm=freq,
                     mask=letter_mask(lemma),
-                    form_masks=compute_form_masks(morph, lemma),
+                    form_masks=masks_from_forms(forms),
+                    forms=forms,
                 ))
         return cls(rows)
 
@@ -113,33 +139,34 @@ class Dictionary:
     def from_db(cls, conn) -> "Dictionary":
         """Load the compiled lemma table from SQLite (see store.py).
 
-        Form-masks come from the `form_masks` column when populated. Rows
-        whose `form_masks` is empty (legacy DBs built before the form-fitness
-        change) are migrated in-place: we compute via pymorphy3 and write
-        back. This makes the migration automatic on first startup after
-        upgrade and a no-op thereafter.
+        Form *strings* come from the `forms` column when populated; `form_masks`
+        is derived from them. Rows whose `forms` is empty (legacy DBs built
+        before forms were stored) are migrated in-place: we re-enumerate via
+        pymorphy3 and write the strings back. This makes the migration
+        automatic on first startup after upgrade and a no-op thereafter.
         """
         # Inline imports avoid module-load cycles with store.py + pymorphy3 cost.
-        from .store import iter_lemmas, update_form_masks_bulk
+        from .store import iter_lemmas, update_forms_bulk
         rows: list[Lemma] = []
-        needs_migration: list[tuple[str, frozenset[int]]] = []
+        needs_migration: list[tuple[str, frozenset[str]]] = []
         morph = None
-        for lemma, pos, freq, mask, form_masks in iter_lemmas(conn):
-            if not form_masks:
+        for lemma, pos, freq, mask, forms in iter_lemmas(conn):
+            if not forms:
                 if morph is None:
                     import pymorphy3
                     morph = pymorphy3.MorphAnalyzer()
-                form_masks = compute_form_masks(morph, lemma)
-                needs_migration.append((lemma, form_masks))
+                forms = compute_forms(morph, lemma)
+                needs_migration.append((lemma, forms))
             rows.append(Lemma(
                 lemma=lemma,
                 pos=pos,
                 freq_ipm=freq,
                 mask=mask,
-                form_masks=form_masks,
+                form_masks=masks_from_forms(forms),
+                forms=forms,
             ))
         if needs_migration:
-            update_form_masks_bulk(conn, needs_migration)
+            update_forms_bulk(conn, needs_migration)
         return cls(rows)
 
     def __len__(self) -> int:

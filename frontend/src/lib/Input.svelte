@@ -4,6 +4,18 @@
   let value = $state("");
   let shaking = $state(false);
   let shakeTimer: ReturnType<typeof setTimeout> | undefined;
+  let inputEl: HTMLInputElement | undefined = $state();
+
+  // Homonym cycling: when an accepted guess still hides another meaning, the
+  // store sets `replayForm` to the typed string. Refill the input with it so
+  // the player only has to press Enter again to claim the next homonym.
+  $effect(() => {
+    const replay = game.replayForm;
+    if (replay == null) return;
+    value = replay;
+    game.replayForm = null;
+    inputEl?.focus();
+  });
 
   // The set of valid letters (in lowercase, Ё folded to Е) — used to show
   // a live "all letters legal?" hint without spoiling whether the word is in
@@ -126,6 +138,7 @@
   <!-- The real input is visually hidden but still receives focus & IME. -->
   <input
     class="real-input"
+    bind:this={inputEl}
     bind:value
     onkeydown={onKey}
     oninput={onInput}

@@ -53,6 +53,14 @@ A reasonable approach for new fold proposals: pick a rule that fits the three-gu
 
 ---
 
+## Answer-key forms + homonyms
+
+- [x] **Constructible forms in the answer key.** Inflected form *strings* stored per lemma (`lemmas.forms`, schema v4; `form_masks` derived from them at load). Generator records each lemma's hive-constructible forms on `ScoredLemma.forms`; API returns them; `AnswersModal.svelte` lists them under each headword so a player learns the typeable form (`сеть`→`сети`, `линь`→`линя`, `лисёнок`→`лисят`) instead of an untypeable citation form.
+- [x] **Homonym cycling (Task 3).** `Lemmatizer.resolve(form, valid, found=)` collects all in-set lemmas a homographic string reaches (`Resolution.reachable`) and returns the first not-yet-found, so re-entering the string walks through each homonym (`линял`→`линять`/`линялый`). Guess response carries `pos` + `homonym_remaining`; the UI refills the input and prompts "enter again" with a POS chip. `already_found` is now decided server-side (all reachable found).
+- [-] **Pangram findability / homonym-safety (Task 2 — deferred, user thinking on it).** Goal: the advertised pangram must always be typeable *and* credit the pangram lemma (not a homonym), while maximizing pangram variety. Proposed approach (not yet built): define a valid pangram as a lemma with a hive-constructible **form** that uses all 7 letters AND round-trips through `resolve` to that same lemma — checked at generation time. Open sub-decision: lemma-gated vs form-gated +7 bonus. Pangram detection today still uses `Lemma.mask` (citation form) per `generator._score_lemmas`.
+
+---
+
 ## Completed (current build)
 
 ### Scaffold

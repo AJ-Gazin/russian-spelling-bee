@@ -15,14 +15,17 @@ the static dir is absent and `/` simply 404s; use Vite (`npm run dev` at
 :5173) which proxies `/api` to this server at :8000.
 
 The /guess response uses one of four statuses:
-  - "accepted"      with lemma + points + is_pangram
-  - "already_found" with lemma  (caller's responsibility — see below)
+  - "accepted"      with lemma + points + is_pangram + pos + homonym_remaining
+  - "already_found" with lemma
   - "not_in_set"    (input parses, but to a lemma not in the puzzle)
   - "unparseable"   (pymorphy3 had nothing for it)
 
-`already_found` is detected client-side from the local found-words list, *or*
-sent in the POST body as `found_lemmas: [...]`. Sending it from the client keeps
-the API stateless. (Server-side per-player state is deferred.)
+The client sends its found-words list in the POST body as `found_lemmas: [...]`,
+keeping the API stateless (server-side per-player state is deferred). The
+lemmatizer is `found`-aware: it both reports "already_found" and powers homonym
+cycling — when a typed string maps to several in-set lemmas, each call returns
+the first not-yet-found one, so re-entering the string walks to the next. The
+`homonym_remaining` flag tells the client another homonym is still unfound.
 """
 
 from __future__ import annotations
@@ -186,6 +189,12 @@ class GuessResponse(BaseModel):
     points: int | None = None
     is_pangram: bool | None = None
     candidates: list[str] = Field(default_factory=list)
+    # POS of the accepted lemma (e.g. "NOUN", "VERB") — lets the UI disambiguate
+    # homonyms (стекло (сущ.) vs стечь (гл.)).
+    pos: str | None = None
+    # True when the typed string still maps to another in-set lemma the player
+    # hasn't found yet — the UI prompts them to enter it again (homonym cycling).
+    homonym_remaining: bool = False
 
 
 class GenerateRequest(BaseModel):
@@ -260,25 +269,27 @@ def guess(puzzle_id: int, req: GuessRequest) -> GuessResponse:
     valid_set = {l.lemma for l in puzzle.lemmas}
     already = set(req.found_lemmas)
 
-    res = _state.lemmatizer.resolve(req.form, valid_set)
+    res = _state.lemmatizer.resolve(req.form, valid_set, found=already)
     if res.status == "accepted":
-        if res.lemma in already:
-            return GuessResponse(status="already_found", lemma=res.lemma)
         # Pull the scored lemma to return points + pangram flag.
         sl = next(l for l in puzzle.lemmas if l.lemma == res.lemma)
+        # Does the same typed string still reach another unfound homonym? If so
+        # the client prompts the player to enter it again to cycle to it.
+        remaining = [
+            r for r in res.reachable if r != res.lemma and r not in already
+        ]
         return GuessResponse(
             status="accepted",
             lemma=sl.lemma,
             points=sl.points,
             is_pangram=sl.is_pangram,
+            pos=sl.pos,
             candidates=list(res.candidates),
+            homonym_remaining=bool(remaining),
         )
+    if res.status == "already_found":
+        return GuessResponse(status="already_found", lemma=res.lemma)
     if res.status == "not_in_set":
-        # Did the user type a form of an already-found lemma? Treat as already_found
-        # — friendlier than "слова нет в наборе" when they just retyped a synonym form.
-        for cand in res.candidates:
-            if cand in already:
-                return GuessResponse(status="already_found", lemma=cand)
         return GuessResponse(status="not_in_set", candidates=list(res.candidates))
     return GuessResponse(status="unparseable")
 

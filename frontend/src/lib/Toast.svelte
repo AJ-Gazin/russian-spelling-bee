@@ -1,5 +1,6 @@
 <script lang="ts">
   import { game } from "./store.svelte";
+  import { posLabel } from "./api";
 
   let visible = $state(false);
   let lastSeq = $state(-1);
@@ -12,7 +13,14 @@
     lastSeq = t.seq;
     visible = true;
     if (timer) clearTimeout(timer);
-    const dur = t.kind === "accepted" && t.isPangram ? 2800 : 1700;
+    // Linger longer for pangrams and for the homonym "enter again" prompt so
+    // the player has time to read and act on it.
+    const dur =
+      t.kind === "accepted" && t.isPangram
+        ? 2800
+        : t.kind === "accepted" && t.homonymRemaining
+          ? 3200
+          : 1700;
     timer = setTimeout(() => (visible = false), dur);
   });
 
@@ -66,6 +74,9 @@
             {:else if t.lemma}
               <span class="lemma sole">{t.lemma}</span>
             {/if}
+            {#if t.pos}
+              <span class="pos" aria-label="часть речи">{posLabel(t.pos)}</span>
+            {/if}
           </div>
           <div class="meta">
             <span class="points">
@@ -76,6 +87,12 @@
               <span class="badge">+7 panграмма</span>
             {/if}
           </div>
+          {#if t.homonymRemaining}
+            <div class="homonym" role="note">
+              <span class="homonym-mark" aria-hidden="true">↻</span>
+              <span>У этого слова есть ещё значение — нажмите <strong>Ввод</strong> ещё&nbsp;раз</span>
+            </div>
+          {/if}
         {:else if t.kind === "already_found"}
           <div class="resolution">
             <span class="lemma sole">{t.lemma ?? t.message}</span>
@@ -209,6 +226,40 @@
   }
   .lemma.sole { color: var(--ink); }
   .toast.pangram .lemma { color: var(--gold-deep); }
+
+  .pos {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.06em;
+    color: var(--ink-mute);
+    border: 1px solid var(--paper-edge);
+    padding: 0.02rem 0.3rem;
+    align-self: center;
+  }
+
+  .homonym {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+    padding-top: 0.35rem;
+    border-top: 1px dashed var(--paper-edge);
+    font-family: var(--body);
+    font-size: 0.82rem;
+    color: var(--plum);
+    line-height: 1.3;
+  }
+  .homonym strong {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+  }
+  .homonym-mark {
+    font-family: var(--display);
+    font-size: 1.05rem;
+    color: var(--plum);
+    line-height: 1;
+  }
 
   .meta {
     font-family: var(--mono);

@@ -1,9 +1,11 @@
 """pymorphy3 wrapper implementing the project's lemma-resolution rule.
 
 The rule: a typed form is *accepted* iff at least one pymorphy3 parse resolves
-to a lemma in the puzzle's valid-lemma set. When multiple parses qualify, the
-highest-scoring parse (by pymorphy3's `.score`) is the one displayed to the
-player as the resolved lemma.
+to a lemma in the puzzle's valid-lemma set. When multiple parses qualify (a
+homonym — e.g. *стекла* → `стекло`/`стечь`), `resolve` returns the
+highest-scoring one the player has not already found, so re-entering the same
+string cycles to the next homonym. This makes each homonym separately earnable
+(see the `found` parameter and `Resolution.reachable`).
 
 Player input is folded for Ё/Е so a user can type either *елка* or *ёлка*
 without caring how the lemma is stored. pymorphy3 internally canonicalizes
@@ -41,9 +43,13 @@ _log = logging.getLogger(__name__)
 class Resolution:
     """Result of resolving a player input against a puzzle's valid lemma set."""
 
-    status: str  # "accepted" | "not_in_set" | "unparseable"
-    lemma: str | None = None  # the matched lemma when status == "accepted"
+    status: str  # "accepted" | "already_found" | "not_in_set" | "unparseable"
+    lemma: str | None = None  # the matched lemma when status in {"accepted", "already_found"}
     candidates: tuple[str, ...] = ()  # all distinct candidate lemmas considered (for debugging / future UI)
+    # All in-set lemmas this form can map to, in pymorphy3-score order (aliases
+    # last). Length > 1 means the typed string is a homonym spanning multiple
+    # puzzle answers — the basis for homonym cycling (see `resolve`).
+    reachable: tuple[str, ...] = ()
 
 
 class Lemmatizer:
@@ -79,23 +85,43 @@ class Lemmatizer:
                 seen[p.normal_form] = None
         return list(seen.keys())
 
-    def resolve(self, form: str, valid_lemmas: Iterable[str] | set[str] | frozenset[str]) -> Resolution:
+    def resolve(
+        self,
+        form: str,
+        valid_lemmas: Iterable[str] | set[str] | frozenset[str],
+        found: Iterable[str] | set[str] | frozenset[str] = (),
+    ) -> Resolution:
         """Resolve a player input against the puzzle's valid-lemma set.
 
         `valid_lemmas` should be a fast-membership container (set / frozenset / dict).
+        `found` is the set of lemmas the player has already scored.
+
+        Homonym cycling: a typed string can map to more than one in-set lemma
+        (e.g. *стекла* → `стекло` (noun) or `стечь` (verb), both in the puzzle).
+        `resolve` collects *all* such reachable lemmas in pymorphy3-score order
+        and returns the first one the player has NOT yet found. Re-entering the
+        same string therefore walks to the next homonym, so each is earnable in
+        turn. When every reachable lemma is already found, status is
+        "already_found".
+
         Returns a Resolution with status:
-          - "accepted" + the lemma (highest-scored qualifying parse)
-          - "not_in_set" + the candidates we considered
-          - "unparseable" with empty candidates if pymorphy3 returned nothing
+          - "accepted"      + the first not-yet-found reachable lemma (+ reachable)
+          - "already_found" + a reachable lemma, when all reachable are found
+          - "not_in_set"    + the candidates we considered
+          - "unparseable"   with empty candidates if pymorphy3 returned nothing
         """
         valid = set(valid_lemmas) if not isinstance(valid_lemmas, (set, frozenset)) else valid_lemmas
+        found_set = found if isinstance(found, (set, frozenset)) else set(found)
         parses = self.parses_for(form)
         if not parses:
             return Resolution(status="unparseable")
-        # Preserve pymorphy3's score order. Pick the first parse whose lemma is valid.
+        # Walk parses in pymorphy3-score order, collecting candidates (all
+        # distinct normal forms, for the not_in_set message) and `reachable`
+        # (those that map into the valid set, de-duplicated, order preserved).
         candidates: list[str] = []
         seen: set[str] = set()
-        first_hit: str | None = None
+        reachable: list[str] = []
+        reach_seen: set[str] = set()
         # Lazily built fold-keyed view of `valid` for the ё-fallback. After the
         # build pipeline fix, the DB consistently stores ё-forms and pymorphy3
         # normalizes input to ё, so this fallback should never fire in
@@ -106,27 +132,42 @@ class Lemmatizer:
             if lemma not in seen:
                 seen.add(lemma)
                 candidates.append(lemma)
-            if first_hit is None:
-                if lemma in valid:
-                    first_hit = lemma
-                else:
-                    if folded_valid is None:
-                        folded_valid = {fold_yo(v): v for v in valid}
-                    hit = folded_valid.get(fold_yo(lemma))
-                    if hit is not None:
-                        _log.warning(
-                            "Lemmatizer ё-fallback: parse %r matched valid lemma %r via fold_yo",
-                            lemma, hit,
-                        )
-                        first_hit = hit
-        if first_hit is not None:
-            return Resolution(status="accepted", lemma=first_hit, candidates=tuple(candidates))
-        # Final fallback: lemma→lemma aliases from folding rules. Walks
-        # candidates in pymorphy3-score order, so the highest-scoring parse
-        # whose alias is in the valid set wins.
+            hit: str | None = None
+            if lemma in valid:
+                hit = lemma
+            else:
+                if folded_valid is None:
+                    folded_valid = {fold_yo(v): v for v in valid}
+                h = folded_valid.get(fold_yo(lemma))
+                if h is not None:
+                    _log.warning(
+                        "Lemmatizer ё-fallback: parse %r matched valid lemma %r via fold_yo",
+                        lemma, h,
+                    )
+                    hit = h
+            if hit is not None and hit not in reach_seen:
+                reach_seen.add(hit)
+                reachable.append(hit)
+        # Extend reachability with lemma→lemma aliases from folding rules. Walks
+        # candidates in pymorphy3-score order, so a higher-scoring parse's alias
+        # comes first. This is the *наедал* → `наедать` → `наедаться` path.
         if self._aliases:
             for cand in candidates:
                 tgt = self._aliases.get(cand)
-                if tgt is not None and tgt in valid:
-                    return Resolution(status="accepted", lemma=tgt, candidates=tuple(candidates))
-        return Resolution(status="not_in_set", candidates=tuple(candidates))
+                if tgt is not None and tgt in valid and tgt not in reach_seen:
+                    reach_seen.add(tgt)
+                    reachable.append(tgt)
+        if not reachable:
+            return Resolution(status="not_in_set", candidates=tuple(candidates))
+        reachable_t = tuple(reachable)
+        for lemma in reachable:
+            if lemma not in found_set:
+                return Resolution(
+                    status="accepted", lemma=lemma,
+                    candidates=tuple(candidates), reachable=reachable_t,
+                )
+        # Every reachable lemma is already in the found set.
+        return Resolution(
+            status="already_found", lemma=reachable[0],
+            candidates=tuple(candidates), reachable=reachable_t,
+        )

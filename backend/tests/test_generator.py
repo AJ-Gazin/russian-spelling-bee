@@ -51,6 +51,25 @@ def test_generator_returns_valid_puzzle_on_stub(stub_dict):
         )
 
 
+def test_scored_lemma_forms_are_constructible(stub_dict):
+    """Every scored lemma must carry at least one constructible form, and every
+    listed form must be buildable from the hive (subset ∧ contains center).
+    This is the data the answer key shows players as a learning aid."""
+    from rsb.alphabet import hive_mask, letter_bit, letter_mask
+
+    p = generate(stub_dict, _stub_cfg(seed=11))
+    hm = hive_mask(p.letters)
+    cb = letter_bit(p.center)
+    for s in p.lemmas:
+        assert s.forms, f"{s.lemma}: no constructible forms surfaced"
+        for w in s.forms:
+            wm = letter_mask(w)
+            assert (wm & ~hm) == 0, f"{s.lemma}: form {w} uses letters outside the hive"
+            assert (wm & cb) != 0, f"{s.lemma}: form {w} is missing the center {p.center}"
+        # Forms are ordered shortest-first then alphabetically.
+        assert list(s.forms) == sorted(s.forms, key=lambda w: (len(w), w))
+
+
 def test_generator_respects_min_vowels(stub_dict):
     from rsb.alphabet import VOWELS
 

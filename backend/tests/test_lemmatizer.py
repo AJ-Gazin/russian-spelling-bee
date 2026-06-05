@@ -41,6 +41,30 @@ def test_ambiguous_form_picks_first_qualifying_parse(lem):
     assert r2.lemma == "стечь"
 
 
+def test_homonym_cycling_skips_already_found(lem):
+    # стекла → стекло (noun, top) / стечь (verb, low). With neither found, the
+    # top parse wins. Mark стекло found and the SAME input now cycles to стечь.
+    valid = {"стекло", "стечь"}
+    r1 = lem.resolve("стекла", valid_lemmas=valid)
+    assert r1.status == "accepted"
+    assert r1.lemma == "стекло"
+    assert set(r1.reachable) == {"стекло", "стечь"}
+
+    r2 = lem.resolve("стекла", valid_lemmas=valid, found={"стекло"})
+    assert r2.status == "accepted"
+    assert r2.lemma == "стечь"
+
+    r3 = lem.resolve("стекла", valid_lemmas=valid, found={"стекло", "стечь"})
+    assert r3.status == "already_found"
+    assert r3.lemma in {"стекло", "стечь"}
+
+
+def test_reachable_is_single_for_non_homonym(lem):
+    r = lem.resolve("домами", valid_lemmas={"дом", "дочь"})
+    assert r.status == "accepted"
+    assert r.reachable == ("дом",)
+
+
 def test_not_in_set_when_lemma_is_outside_puzzle(lem):
     r = lem.resolve("домами", valid_lemmas={"кот"})
     assert r.status == "not_in_set"

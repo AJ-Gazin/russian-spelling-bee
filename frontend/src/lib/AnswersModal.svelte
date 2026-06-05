@@ -112,11 +112,15 @@
             <ul class="group-list">
               {#each g.lemmas as l (l.lemma)}
                 {@const isFound = foundSet.has(l.lemma)}
+                {@const forms = l.forms ?? []}
+                {@const showForms =
+                  forms.length > 1 ||
+                  (forms.length === 1 && forms[0] !== l.lemma)}
                 <li
                   class:found={isFound}
                   class:remaining={!isFound}
                   class:pangram={l.is_pangram}
-                  aria-label={`${l.lemma}, ${l.points} очков${l.is_pangram ? ", панграмма" : ""}, ${isFound ? "найдено" : "не найдено"}`}
+                  aria-label={`${l.lemma}, ${l.points} очков${l.is_pangram ? ", панграмма" : ""}, ${isFound ? "найдено" : "не найдено"}${showForms ? `, формы в пазле: ${forms.join(", ")}` : ""}`}
                 >
                   <span class="mark" aria-hidden="true">
                     {isFound ? "✓" : "○"}
@@ -126,6 +130,11 @@
                     <span class="badge" aria-hidden="true">пангр.</span>
                   {/if}
                   <span class="pts" aria-hidden="true">{l.points}</span>
+                  {#if showForms}
+                    <span class="forms" aria-hidden="true">
+                      {#each forms as f (f)}<span class="form-chip">{f}</span>{/each}
+                    </span>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -342,6 +351,34 @@
   .word {
     min-width: 0;
     overflow-wrap: anywhere;
+  }
+
+  /* Constructible forms — the actual spellings playable from this hive. Shown
+     under the headword (which may not itself be typeable) as a learning aid. */
+  .forms {
+    grid-column: 2 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.35rem;
+    margin-top: 0.12rem;
+  }
+  .form-chip {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.01em;
+    color: var(--ink-mute);
+    background: var(--paper-warm);
+    border: 1px solid var(--paper-edge);
+    padding: 0.02rem 0.3rem;
+    line-height: 1.35;
+  }
+  .group-list li.found .form-chip {
+    color: var(--ink);
+    border-color: var(--ink-faint);
+  }
+  .group-list li.pangram .form-chip {
+    border-color: var(--plum);
+    color: var(--plum);
   }
 
   .badge {

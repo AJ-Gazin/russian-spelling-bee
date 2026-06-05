@@ -70,3 +70,21 @@ def test_ten_trap_form_fitness_admits_lemma_via_inflected_form(stub_dict):
 def test_yo_stored_with_yo(stub_dict):
     assert "ёлка" in stub_dict
     assert "елка" not in stub_dict
+
+
+def test_forms_populated_and_yo_aware(stub_dict):
+    from rsb.dictionary import masks_from_forms
+
+    l = stub_dict.get("ёлка")
+    assert l is not None
+    # Form strings are stored, Ё-aware, and include the citation form.
+    assert "ёлка" in l.forms
+    assert len(l.forms) > 1, "expected multiple inflected forms for ёлка"
+    # form_masks is consistently derived from the form strings.
+    assert l.form_masks == masks_from_forms(l.forms)
+
+
+def test_every_long_lemma_has_forms(stub_dict):
+    long_enough = [l for l in stub_dict if len(l.lemma) >= 4]
+    missing = [l.lemma for l in long_enough if not l.forms]
+    assert not missing, f"lemmas missing form strings: {missing[:5]}"
