@@ -12,14 +12,13 @@ Conventions:
 
 A dedicated session will own the visual / interaction pass over the frontend. Specific known issues (not exhaustive — audit needed):
 
-- [ ] Header layout: "Русский Spelling Bee" wraps to two lines when the difficulty chip is wide
+- [ ] Header layout: title line can wrap awkwardly on narrow viewports
 - [ ] Accept toast doesn't show *form → lemma* even though `Toast.svelte` supports it — `game.guess()` needs to thread the raw `form` into the toast (`lib/store.svelte.ts`)
 - [ ] Rank pip strip looks plain against real puzzle score distributions
 - [ ] Hive typography (Georgia) is functional but unopinionated
 - [ ] `already_found` toast visually indistinguishable from typo rejection
 - [ ] Empty-state / error rendering when the API errors or returns 404
 - [ ] Mobile / narrow-viewport pass
-- [ ] Decide if a "top-N" badge should be visible on the rendered puzzle so players can see which difficulty they're playing
 
 All frontend code lives in `frontend/src/`. Start with `App.svelte` → `lib/store.svelte.ts` → each component.
 
@@ -31,8 +30,7 @@ Small backend items that aren't blocking but should be revisited:
 
 - [ ] Per-letter rare-letter floors (Ф Ц Щ Э rotation guarantees) — currently best-effort via frequency weights only
 - [ ] Lemmatizer consults `aliases` from `overrides.yaml` — currently the section is loaded but unused (no real-world hits today; trivial to plumb when needed)
-- [ ] **Difficulty future:** custom-N input for power users (presets only today)
-- [ ] **Generator calibration after form-fitness:** the form-level fitness rule (a lemma is admitted if any of its inflected forms fits the hive) admits more lemmas per hive than the old citation-form rule. Re-tune `min_lemmas` / `max_lemmas` bands and `top_n` preset thresholds once we have play data on real puzzles. Two baselines exist now: `2026-05-26-form-fitness-v2` (post yo-recovery, pre folds) and `2026-05-26-folds-v1` (post folds). The folds rule had near-zero impact on puzzle shape (mergers are below the preset top-N thresholds for the most part); aliases are invisible at generation time but affect lookup acceptance.
+- [ ] **Generator calibration after form-fitness:** the form-level fitness rule admits more lemmas per hive than the old citation-form rule. Re-tune `min_lemmas` / `max_lemmas` bands once we have play data on real puzzles.
 
 ---
 
@@ -57,7 +55,20 @@ A reasonable approach for new fold proposals: pick a rule that fits the three-gu
 
 - [x] **Constructible forms in the answer key.** Inflected form *strings* stored per lemma (`lemmas.forms`, schema v4; `form_masks` derived from them at load). Generator records each lemma's hive-constructible forms on `ScoredLemma.forms`; API returns them; `AnswersModal.svelte` lists them under each headword so a player learns the typeable form (`сеть`→`сети`, `линь`→`линя`, `лисёнок`→`лисят`) instead of an untypeable citation form.
 - [x] **Homonym cycling (Task 3).** `Lemmatizer.resolve(form, valid, found=)` collects all in-set lemmas a homographic string reaches (`Resolution.reachable`) and returns the first not-yet-found, so re-entering the string walks through each homonym (`линял`→`линять`/`линялый`). Guess response carries `pos` + `homonym_remaining`; the UI refills the input and prompts "enter again" with a POS chip. `already_found` is now decided server-side (all reachable found).
-- [-] **Pangram findability / homonym-safety (Task 2 — deferred, user thinking on it).** Goal: the advertised pangram must always be typeable *and* credit the pangram lemma (not a homonym), while maximizing pangram variety. Proposed approach (not yet built): define a valid pangram as a lemma with a hive-constructible **form** that uses all 7 letters AND round-trips through `resolve` to that same lemma — checked at generation time. Open sub-decision: lemma-gated vs form-gated +7 bonus. Pangram detection today still uses `Lemma.mask` (citation form) per `generator._score_lemmas`.
+- [ ] **Pangram findability / homonym-safety (Task 2 — needs a solution).** The advertised pangram must always be typeable *and* credit the pangram lemma rather than a homonym, while keeping pangram variety as wide as possible. Today pangram detection uses `Lemma.mask` (the citation form) in `generator._score_lemmas`, which guarantees neither. Solution TBD.
+- [x] **Dictionary hyperlinks on answers.** Each lemma in the answer key (`AnswersModal`) and the found-words list (`FoundList`) links to `ru.wiktionary.org/wiki/{lemma}`. Styled as invisible links (inherit text color, no underline) with a faint underline on hover — zero visual noise at rest. Opens in new tab.
+
+---
+
+## Word rarity representation
+
+Each lemma already carries `freq_ipm`; now that difficulties are gone and the full lexicon is always in play, we want some way to acknowledge rare words. Form TBD — possibilities include:
+
+- [ ] **Visual indicator in answer key / found list.** A subtle color or symbol (e.g. a gem, a star) for words below a rarity threshold (say < 2 ipm or < 5 ipm). Pure cosmetic reward — "you knew an obscure word."
+- [ ] **Scoring bonus for rare words.** Award extra points for low-frequency lemmas — a sliding scale or discrete tiers. Would require recalibrating rank thresholds.
+- [ ] **Post-game "rare finds" callout.** A summary section after revealing the answer key that highlights which rare words the player found (and which they missed), framed as a vocabulary-learning moment.
+
+Design constraint: the signal should feel rewarding, not punitive — a player who only knows common words should feel normal, not penalized. The rarity badge is a bonus for vocabulary depth, not a mark of failure for its absence.
 
 ---
 
@@ -103,11 +114,9 @@ A reasonable approach for new fold proposals: pick a rule that fits the three-gu
 - [x] `normalize()` routes include/exclude/alias-values through `canonical_lemma` so authors can spell entries with or without ё
 - [x] Live dictionary holds 42,775 lemmas after overrides + folding (both pre-applied at build time)
 
-### Dynamic difficulty (top-N)
-- [x] `top_n` field on `GeneratorConfig`; `generate()` filters the dictionary to top-N by freq before sampling
-- [x] `POST /admin/generate` accepts `top_n` (+ optional `min_lemmas`/`max_lemmas`/`require_pangram`/`seed`)
-- [x] API auto-relaxes `min_lemmas` and pangram floor when `top_n ≤ 5000` so small pools stay satisfiable
-- [x] `NewGame.svelte` dropdown with 4 presets (Лёгкий / Средний / Сложный / Эксперт), selection persists
+### New game
+- [x] `POST /admin/generate` accepts optional `min_lemmas`/`max_lemmas`/`require_pangram`/`seed`
+- [x] `NewGame.svelte` single button generates a puzzle from the full lexicon
 
 ### UX (initial pass — refined further in the upcoming UX session)
 - [x] Three distinct rejection toasts wired to API status codes
@@ -134,7 +143,7 @@ Everything below is **out of scope for the current build** but worth preserving 
 - [-] End-of-day missed-words review with one-line definitions
 - [-] "Сохранить слово" personal vocabulary affordance
 - [-] Hints grid (words-by-letter, two-letter starters)
-- [-] "Редкое слово" badge for lemmas below 1 ipm
+- [-] "Редкое слово" badge — subsumed by the "Word rarity representation" section above
 - [-] Single "show me one word I missed" reveal per day
 
 ### Hosting / ops

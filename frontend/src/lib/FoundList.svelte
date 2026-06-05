@@ -102,7 +102,12 @@
                 class:pangram={pangramSet.has(w)}
                 aria-label={pangramSet.has(w) ? `${w} (панграмма)` : undefined}
               >
-                {w}
+                <a
+                  class="word-link"
+                  href="https://ru.wiktionary.org/wiki/{w}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{w}</a>
               </li>
             {/each}
           </ul>
@@ -342,6 +347,16 @@
   .group-words li.pangram {
     color: var(--plum);
     font-weight: 700;
+  }
+  .word-link {
+    color: inherit;
+    text-decoration: none;
+    transition: text-decoration-color 0.15s ease;
+  }
+  .word-link:hover {
+    text-decoration: underline;
+    text-decoration-color: var(--ink-faint);
+    text-underline-offset: 0.15em;
   }
 
   /* Empty state */

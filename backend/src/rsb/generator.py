@@ -40,10 +40,6 @@ class GeneratorConfig:
     max_attempts: int = 2000
     # Seed for reproducibility; None → fresh entropy.
     seed: int | None = None
-    # Difficulty knob: when set, only consider the top-N most frequent lemmas
-    # in the dictionary. None ⇒ use the whole dictionary (default = "hardest").
-    # Smaller N ⇒ easier puzzle (only common words).
-    top_n: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,17 +174,9 @@ def _accept(
     return True
 
 
-def _restrict_to_top_n(dictionary: Dictionary, top_n: int) -> Dictionary:
-    """Return a Dictionary containing only the top-N lemmas by freq_ipm."""
-    top = sorted(dictionary, key=lambda l: l.freq_ipm, reverse=True)[:top_n]
-    return Dictionary(top)
-
-
 def generate(dictionary: Dictionary, cfg: GeneratorConfig | None = None) -> Puzzle:
     """Generate a single accepted puzzle, or raise NoPuzzleFound."""
     cfg = cfg or GeneratorConfig()
-    if cfg.top_n is not None and cfg.top_n < len(dictionary):
-        dictionary = _restrict_to_top_n(dictionary, cfg.top_n)
     rng = random.Random(cfg.seed)
     weights = _letter_weights(dictionary)
 

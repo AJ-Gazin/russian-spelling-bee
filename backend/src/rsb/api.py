@@ -143,13 +143,21 @@ async def lifespan(_app: FastAPI):
     log.info("state store backend: %s", _state.state_store.backend)
 
     # Auto-generate a starter puzzle if state is empty, so the UI has
-    # something to render on first run.
+    # something to render on first run. The seed becomes the pinned "daily"
+    # puzzle — the default a brand-new visitor opens on.
     if _state.state_store.count_puzzles() == 0:
         try:
             p = generate(_state.dictionary, _state.generator_cfg)
-            _state.state_store.save_puzzle(p)
+            pid = _state.state_store.save_puzzle(p)
+            _state.state_store.set_featured(pid)
         except NoPuzzleFound:
             pass
+    elif _state.state_store.get_featured_puzzle() is None:
+        # Existing DB from before the daily-puzzle feature: pin the latest
+        # puzzle as the daily so /api/puzzle/daily has something to serve.
+        cur = _state.state_store.get_current_puzzle()
+        if cur is not None:
+            _state.state_store.set_featured(cur[0])
     yield
     _state.state_store.close()
     _state.db.close()
@@ -178,6 +186,18 @@ class PuzzleResponse(BaseModel):
     thresholds: dict[str, Any]
 
 
+class HistoryEntry(BaseModel):
+    """One entry in the recently-played list. Lightweight summary — the full
+    puzzle (with lemmas) is fetched on demand via GET /api/puzzle/{id} when the
+    player reopens it."""
+
+    id: int
+    letters: str
+    center: str
+    total_points: int
+    started_at: str
+
+
 class GuessRequest(BaseModel):
     form: str = Field(..., min_length=1, max_length=64)
     found_lemmas: list[str] = Field(default_factory=list)
@@ -200,12 +220,6 @@ class GuessResponse(BaseModel):
 class GenerateRequest(BaseModel):
     """Optional body for POST /admin/generate. Empty body ⇒ use server defaults."""
 
-    top_n: int | None = Field(
-        default=None,
-        ge=200,
-        le=200000,
-        description="Restrict the lemma pool to the top-N most frequent lemmas. None ⇒ full dictionary.",
-    )
     min_lemmas: int | None = Field(default=None, ge=4, le=300)
     max_lemmas: int | None = Field(default=None, ge=4, le=300)
     require_pangram: bool | None = None
@@ -251,6 +265,29 @@ def get_current() -> PuzzleResponse:
     return _puzzle_to_response(*pair)
 
 
+@api.get("/puzzle/daily", response_model=PuzzleResponse)
+def get_daily() -> PuzzleResponse:
+    """The pinned daily/featured puzzle — the default a new visitor opens on.
+    Stable: pressing "New Game" does NOT change it (that only rebinds the
+    caller's own browser). Re-pin via POST /api/admin/daily/{id}."""
+    pair = _state.state_store.get_featured_puzzle()
+    if pair is None:
+        raise HTTPException(status_code=404, detail="No daily puzzle yet — POST /api/admin/generate")
+    return _puzzle_to_response(*pair)
+
+
+@api.get("/history", response_model=list[HistoryEntry])
+def get_history(limit: int = 10) -> list[HistoryEntry]:
+    """The last `limit` puzzles that have had at least one word correctly
+    guessed, newest first. Global (shared across visitors) and Turso-durable."""
+    limit = max(1, min(limit, 50))
+    rows = _state.state_store.list_history(limit=limit)
+    return [
+        HistoryEntry(id=i, letters=l, center=c, total_points=tp, started_at=sa)
+        for (i, l, c, tp, sa) in rows
+    ]
+
+
 @api.get("/puzzle/{puzzle_id}", response_model=PuzzleResponse)
 def get_one(puzzle_id: int) -> PuzzleResponse:
     pair = _state.state_store.get_puzzle(puzzle_id)
@@ -271,6 +308,9 @@ def guess(puzzle_id: int, req: GuessRequest) -> GuessResponse:
 
     res = _state.lemmatizer.resolve(req.form, valid_set, found=already)
     if res.status == "accepted":
+        # A correct guess enters this puzzle into the recently-played history
+        # (idempotent — only the first solve records a row).
+        _state.state_store.mark_started(puzzle_id)
         # Pull the scored lemma to return points + pangram flag.
         sl = next(l for l in puzzle.lemmas if l.lemma == res.lemma)
         # Does the same typed string still reach another unfound homonym? If so
@@ -299,16 +339,6 @@ def admin_generate(req: GenerateRequest | None = None) -> PuzzleResponse:
     cfg = _state.generator_cfg
     if req is not None:
         overrides: dict[str, Any] = {}
-        if req.top_n is not None:
-            overrides["top_n"] = req.top_n
-            # Smaller pools rarely satisfy the 25-lemma floor, so soften it
-            # proportionally unless the caller explicitly set it.
-            if req.min_lemmas is None and req.top_n <= 5000:
-                overrides["min_lemmas"] = max(8, min(25, req.top_n // 200))
-            # Same for pangram requirement: low top_n hives often have no
-            # pangram with freq ≥ 2 ipm. Drop the floor for small pools.
-            if req.require_pangram is None and req.top_n <= 5000:
-                overrides["pangram_freq_floor"] = 0.0
         if req.min_lemmas is not None:
             overrides["min_lemmas"] = req.min_lemmas
         if req.max_lemmas is not None:
@@ -325,6 +355,16 @@ def admin_generate(req: GenerateRequest | None = None) -> PuzzleResponse:
         raise HTTPException(status_code=503, detail=str(e))
     pid = _state.state_store.save_puzzle(p)
     return _puzzle_to_response(pid, p)
+
+
+@api.post("/admin/daily/{puzzle_id}", response_model=PuzzleResponse)
+def admin_set_daily(puzzle_id: int) -> PuzzleResponse:
+    """Pin an existing puzzle as the daily/featured default for new visitors."""
+    pair = _state.state_store.get_puzzle(puzzle_id)
+    if pair is None:
+        raise HTTPException(status_code=404, detail=f"No puzzle with id {puzzle_id}")
+    _state.state_store.set_featured(puzzle_id)
+    return _puzzle_to_response(*pair)
 
 
 app.include_router(api)

@@ -125,7 +125,12 @@
                   <span class="mark" aria-hidden="true">
                     {isFound ? "✓" : "○"}
                   </span>
-                  <span class="word">{l.lemma}</span>
+                  <a
+                    class="word"
+                    href="https://ru.wiktionary.org/wiki/{l.lemma}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >{l.lemma}</a>
                   {#if l.is_pangram}
                     <span class="badge" aria-hidden="true">пангр.</span>
                   {/if}
@@ -348,9 +353,17 @@
   .group-list li.found .mark { color: var(--green); }
   .group-list li.remaining .mark { color: var(--ink-faint); }
 
-  .word {
+  a.word {
     min-width: 0;
     overflow-wrap: anywhere;
+    color: inherit;
+    text-decoration: none;
+    transition: text-decoration-color 0.15s ease;
+  }
+  a.word:hover {
+    text-decoration: underline;
+    text-decoration-color: var(--ink-faint);
+    text-underline-offset: 0.15em;
   }
 
   /* Constructible forms — the actual spellings playable from this hive. Shown
