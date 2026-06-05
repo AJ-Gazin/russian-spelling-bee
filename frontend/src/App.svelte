@@ -1,22 +1,38 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { fetchCurrentPuzzle, generateNewPuzzle, type GenerateOptions } from "./lib/api";
+  import { fetchDailyPuzzle, fetchPuzzleById, generateNewPuzzle, type GenerateOptions, type Puzzle } from "./lib/api";
   import { game } from "./lib/store.svelte";
+  import { loadActivePuzzleId, saveActivePuzzleId } from "./lib/persist";
   import Hive from "./lib/Hive.svelte";
   import Input from "./lib/Input.svelte";
   import FoundList from "./lib/FoundList.svelte";
   import NewGame from "./lib/NewGame.svelte";
+  import HistoryModal from "./lib/HistoryModal.svelte";
   import RankBar from "./lib/RankBar.svelte";
   import ThemeToggle from "./lib/ThemeToggle.svelte";
   import Toast from "./lib/Toast.svelte";
 
   let inputRef: ReturnType<typeof Input> | undefined;
+  let showHistory = $state(false);
 
   onMount(async () => {
     game.loading = true;
     try {
-      const p = await fetchCurrentPuzzle();
+      // Returning browser → its own last puzzle; new browser → shared daily.
+      const activeId = loadActivePuzzleId();
+      let p: Puzzle;
+      if (activeId != null) {
+        try {
+          p = await fetchPuzzleById(activeId);
+        } catch {
+          // Stored puzzle is gone (e.g. ephemeral state reset) — fall back.
+          p = await fetchDailyPuzzle();
+        }
+      } else {
+        p = await fetchDailyPuzzle();
+      }
       game.setPuzzle(p);
+      saveActivePuzzleId(p.id);
     } catch (e) {
       game.error = String(e);
     } finally {
@@ -27,8 +43,25 @@
   async function newPuzzle(opts: GenerateOptions) {
     game.loading = true;
     try {
+      // Generating only rebinds THIS browser's active puzzle; the shared daily
+      // and other visitors are untouched.
       const p = await generateNewPuzzle(opts);
       game.setPuzzle(p);
+      saveActivePuzzleId(p.id);
+    } catch (e) {
+      game.error = String(e);
+    } finally {
+      game.loading = false;
+    }
+  }
+
+  async function switchToPuzzle(id: number) {
+    if (id === game.puzzle?.id) return;
+    game.loading = true;
+    try {
+      const p = await fetchPuzzleById(id);
+      game.setPuzzle(p); // setPuzzle restores found-words from localStorage
+      saveActivePuzzleId(id); // reopening from history makes it your current
     } catch (e) {
       game.error = String(e);
     } finally {
@@ -73,6 +106,16 @@
         </p>
       </div>
       <div class="masthead-actions">
+        <button
+          class="history-btn"
+          onclick={() => (showHistory = true)}
+          disabled={game.loading}
+          title="Последние игры"
+          aria-label="История игр"
+        >
+          <span class="history-eyebrow">Архив</span>
+          <span class="history-label">История</span>
+        </button>
         <NewGame onGenerate={newPuzzle} disabled={game.loading} />
       </div>
     </div>
@@ -124,6 +167,12 @@
     </footer>
   {/if}
 </main>
+
+<HistoryModal
+  open={showHistory}
+  onClose={() => (showHistory = false)}
+  onPick={switchToPuzzle}
+/>
 
 <Toast />
 
@@ -223,6 +272,47 @@
   .masthead-actions {
     align-self: end;
     padding-bottom: 0.25rem;
+    display: flex;
+    align-items: stretch;
+    gap: 0.6rem;
+  }
+
+  .history-btn {
+    background: var(--paper-warm);
+    border: 1px solid var(--ink);
+    border-radius: 0;
+    color: var(--ink);
+    font-family: inherit;
+    text-align: left;
+    padding: 0.55rem 0.95rem;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+    box-shadow: 3px 3px 0 var(--shadow-card-ink);
+    transition:
+      transform 0.08s var(--ease-out),
+      box-shadow 0.08s var(--ease-out),
+      background 0.15s ease;
+  }
+  .history-btn:hover:not(:disabled) { background: var(--paper-deep); }
+  .history-btn:active:not(:disabled) {
+    transform: translate(3px, 3px);
+    box-shadow: 0 0 0 var(--shadow-card-ink);
+  }
+  .history-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .history-eyebrow {
+    font-family: var(--mono);
+    font-size: 0.55rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+  .history-label {
+    font-family: var(--display);
+    font-size: 1.1rem;
+    line-height: 1;
+    letter-spacing: 0.01em;
   }
 
   /* ======== Stage layout ======== */

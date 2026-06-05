@@ -69,6 +69,32 @@ CREATE TABLE IF NOT EXISTS scores (
 CREATE INDEX IF NOT EXISTS idx_scores_puzzle ON scores(puzzle_id);
 """
 
+# Recently-played puzzles. A puzzle joins history the first time a word is
+# correctly guessed for it (api.py calls mark_started on an "accepted" guess).
+# PRIMARY KEY(puzzle_id) + INSERT OR IGNORE makes that idempotent, so started_at
+# captures the first-solve time and never moves. The list is global (no player
+# dimension — matches the stateless-progress design); per-browser progress for
+# each entry stays in the client's localStorage.
+HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS history (
+    puzzle_id  INTEGER PRIMARY KEY,
+    started_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_history_started ON history(started_at);
+"""
+
+# The pinned "daily" puzzle — the default a brand-new visitor (empty browser)
+# opens on. A single-row pointer (CHECK id=1) into the puzzles table. It is set
+# once at startup (the seed puzzle) and only moves via an explicit re-pin
+# (admin) — crucially NOT when a player presses "New Game". That keeps each
+# browser's active puzzle private while the daily stays stable for everyone.
+FEATURED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS featured (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    puzzle_id INTEGER NOT NULL
+);
+"""
+
 
 # ---------- serialization (shared by both implementations) ----------------
 
@@ -131,6 +157,12 @@ class StateStore(Protocol):
     def get_current_puzzle(self) -> tuple[int, Puzzle] | None: ...
     def list_puzzles(self) -> Iterator[tuple[int, str, str, int]]: ...
     def count_puzzles(self) -> int: ...
+    def mark_started(self, puzzle_id: int) -> None: ...
+    def list_history(
+        self, limit: int = 10
+    ) -> list[tuple[int, str, str, int, str]]: ...
+    def get_featured_puzzle(self) -> tuple[int, Puzzle] | None: ...
+    def set_featured(self, puzzle_id: int) -> None: ...
     def close(self) -> None: ...
 
 
@@ -160,7 +192,9 @@ class LocalSqliteStateStore:
         )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(PUZZLES_SCHEMA + SCORES_SCHEMA)
+        conn.executescript(
+            PUZZLES_SCHEMA + SCORES_SCHEMA + HISTORY_SCHEMA + FEATURED_SCHEMA
+        )
         return cls(conn)
 
     def save_puzzle(self, p: Puzzle) -> int:
@@ -203,6 +237,42 @@ class LocalSqliteStateStore:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) AS c FROM puzzles").fetchone()["c"]
 
+    def mark_started(self, puzzle_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO history(puzzle_id) VALUES(?)", (puzzle_id,)
+            )
+
+    def list_history(self, limit: int = 10) -> list[tuple[int, str, str, int, str]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT p.id, p.letters, p.center, p.total_points, h.started_at "
+                "FROM history h JOIN puzzles p ON p.id = h.puzzle_id "
+                "ORDER BY h.started_at DESC, h.puzzle_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            (r["id"], r["letters"], r["center"], r["total_points"], r["started_at"])
+            for r in rows
+        ]
+
+    def get_featured_puzzle(self) -> tuple[int, Puzzle] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT p.id, p.payload FROM featured f "
+                "JOIN puzzles p ON p.id = f.puzzle_id WHERE f.id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return row["id"], _puzzle_from_payload(row["payload"])
+
+    def set_featured(self, puzzle_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO featured(id, puzzle_id) VALUES(1, ?)",
+                (puzzle_id,),
+            )
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -242,7 +312,9 @@ class TursoStateStore:
             ) from e
         conn = libsql.connect(database=url, auth_token=auth_token)
         # Idempotent — same DDL works on both sqlite3 and libsql.
-        for stmt in (PUZZLES_SCHEMA + SCORES_SCHEMA).split(";"):
+        for stmt in (
+            PUZZLES_SCHEMA + SCORES_SCHEMA + HISTORY_SCHEMA + FEATURED_SCHEMA
+        ).split(";"):
             s = stmt.strip()
             if s:
                 conn.execute(s)
@@ -291,6 +363,42 @@ class TursoStateStore:
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) FROM puzzles").fetchone()
         return int(row[0])
+
+    def mark_started(self, puzzle_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO history(puzzle_id) VALUES(?)", (puzzle_id,)
+            )
+            self._conn.commit()
+
+    def list_history(self, limit: int = 10) -> list[tuple[int, str, str, int, str]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT p.id, p.letters, p.center, p.total_points, h.started_at "
+                "FROM history h JOIN puzzles p ON p.id = h.puzzle_id "
+                "ORDER BY h.started_at DESC, h.puzzle_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        # Tuple-indexed (no Row factory in libsql 0.1.x); order matches the SELECT.
+        return [(int(r[0]), r[1], r[2], int(r[3]), r[4]) for r in rows]
+
+    def get_featured_puzzle(self) -> tuple[int, Puzzle] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT p.id, p.payload FROM featured f "
+                "JOIN puzzles p ON p.id = f.puzzle_id WHERE f.id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return int(row[0]), _puzzle_from_payload(row[1])
+
+    def set_featured(self, puzzle_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO featured(id, puzzle_id) VALUES(1, ?)",
+                (puzzle_id,),
+            )
+            self._conn.commit()
 
     def close(self) -> None:
         # libsql.Connection has no explicit close in 0.1.x; let GC handle it.

@@ -82,8 +82,40 @@ export async function fetchCurrentPuzzle(): Promise<Puzzle> {
   return (await r.json()) as Puzzle;
 }
 
+// The pinned daily/featured puzzle — what a brand-new visitor opens on. Stable
+// across other players generating puzzles (see backend /api/puzzle/daily).
+export async function fetchDailyPuzzle(): Promise<Puzzle> {
+  const url = `${BASE}/puzzle/daily`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`GET ${url} → ${r.status}`);
+  return (await r.json()) as Puzzle;
+}
+
+export async function fetchPuzzleById(id: number): Promise<Puzzle> {
+  const url = `${BASE}/puzzle/${id}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`GET ${url} → ${r.status}`);
+  return (await r.json()) as Puzzle;
+}
+
+// One row of the recently-played history. Lightweight summary; the full puzzle
+// (with lemmas) is fetched via fetchPuzzleById when the player reopens it.
+export interface HistoryEntry {
+  id: number;
+  letters: string;
+  center: string;
+  total_points: number;
+  started_at: string;
+}
+
+export async function fetchHistory(limit = 10): Promise<HistoryEntry[]> {
+  const url = `${BASE}/history?limit=${limit}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`GET ${url} → ${r.status}`);
+  return (await r.json()) as HistoryEntry[];
+}
+
 export interface GenerateOptions {
-  top_n?: number | null;
   min_lemmas?: number | null;
   max_lemmas?: number | null;
   require_pangram?: boolean | null;

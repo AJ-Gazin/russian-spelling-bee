@@ -8,6 +8,30 @@
 
 const KEY = (id: number) => `rsb:found:${id}`;
 
+// The puzzle this browser is currently on. Per-browser so pressing "New Game"
+// only rebinds the local view — it does not change what other visitors see.
+// New visitors (no value here) fall back to the shared daily puzzle.
+const ACTIVE_KEY = "rsb:active";
+
+export function loadActivePuzzleId(): number | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_KEY);
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveActivePuzzleId(id: number): void {
+  try {
+    localStorage.setItem(ACTIVE_KEY, String(id));
+  } catch {
+    /* noop — see saveFound */
+  }
+}
+
 export function loadFound(puzzleId: number): string[] {
   try {
     const raw = localStorage.getItem(KEY(puzzleId));

@@ -23,7 +23,7 @@
 | Puzzle generator | live; constraint-checked; deterministic under seed; `top_n` difficulty knob; **form-level fitness** | `backend/src/rsb/generator.py` |
 | Lemma store (SQLite, read-only at runtime) | live; `lemmas` (+ `forms` strings) + `aliases` tables (schema v4) — baked into the Docker image | `backend/src/rsb/store.py` |
 | State store (puzzles; future: scores) | live; Protocol with two impls (`LocalSqliteStateStore` for dev, `TursoStateStore` for prod) selected by env vars | `backend/src/rsb/state_store.py` |
-| FastAPI server | live; 5 endpoints under `/api`; serves the built Svelte SPA at `/` when `./static/` exists | `backend/src/rsb/api.py` |
+| FastAPI server | live; endpoints under `/api` (puzzle/daily/current/by-id, guess, history, admin generate/daily); serves the built Svelte SPA at `/` when `./static/` exists | `backend/src/rsb/api.py` |
 | Svelte 5 frontend | live; full play loop in browser; difficulty selector | `frontend/src/` |
 | HF Space deploy | live at https://ajgazin-russian-spelling-bee.hf.space; multi-stage Dockerfile; `scripts/deploy_hf.sh` for one-command redeploy | `Dockerfile`, `scripts/deploy_hf.sh`, `docs/deploy-huggingface.md` |
 | Tests | 73 passing | `backend/tests/*.py` |
@@ -187,12 +187,17 @@ Implemented in `backend/src/rsb/api.py` (FastAPI). All routes are mounted on an 
 | Method | Path | Body | Notes |
 |---|---|---|---|
 | GET | `/api/health` | — | `{status, state_store}`. Liveness + which state backend booted (`local-sqlite` vs `turso`). |
-| GET | `/api/puzzle/current` | — | Auto-generates one on first boot if the state store is empty. |
-| GET | `/api/puzzle/{id}` | — | 404 if not found. |
-| POST | `/api/puzzle/{id}/guess` | `{form, found_lemmas}` | Returns `{status, lemma?, points?, is_pangram?, pos?, homonym_remaining, candidates}`. `homonym_remaining`=true ⇒ same string reaches another unfound homonym (re-submit to cycle). |
-| POST | `/api/admin/generate` | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | All fields optional; empty body uses server defaults. |
+| GET | `/api/puzzle/daily` | — | The pinned daily/featured puzzle — the default a brand-new browser opens on. Stable: `/admin/generate` does NOT move it. Set at boot (seed); re-pin via `/admin/daily/{id}`. |
+| GET | `/api/puzzle/current` | — | Latest puzzle by id. Auto-generates one on first boot if the store is empty. (The frontend uses `daily` + the browser's stored active id, not this.) |
+| GET | `/api/puzzle/{id}` | — | 404 if not found. Used to reopen the browser's active puzzle and history entries. |
+| POST | `/api/puzzle/{id}/guess` | `{form, found_lemmas}` | Returns `{status, lemma?, points?, is_pangram?, pos?, homonym_remaining, candidates}`. On `accepted`, records the puzzle into history (idempotent). `homonym_remaining`=true ⇒ same string reaches another unfound homonym (re-submit to cycle). |
+| GET | `/api/history` | `?limit=10` | Last `limit` puzzles that have had ≥1 correct guess, newest first. Global/shared, Turso-durable. `[{id, letters, center, total_points, started_at}]`. |
+| POST | `/api/admin/generate` | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | All fields optional; empty body uses server defaults. Saves to the shared pool but does NOT change the daily. |
+| POST | `/api/admin/daily/{id}` | — | Pin an existing puzzle as the daily/featured default. 404 if the id is unknown. |
 
-`status` ∈ {`accepted`, `already_found`, `not_in_set`, `unparseable`}. Server-side per-player state is deferred; the client passes `found_lemmas` on every guess.
+`status` ∈ {`accepted`, `already_found`, `not_in_set`, `unparseable`}.
+
+**Per-browser vs shared model:** each browser tracks its own *active* puzzle in `localStorage` (`rsb:active`) plus per-puzzle found-words (`rsb:found:{id}`). Pressing "New Game" generates a puzzle and rebinds only the local active id — other visitors are untouched. The **daily** puzzle (new-visitor default) and the **history** list are the shared surfaces. Server-side per-player scoring is still deferred; the client passes `found_lemmas` on every guess.
 
 ---
 
@@ -209,9 +214,10 @@ Svelte 5 + Vite + TypeScript single-page app under `frontend/`. Uses Svelte 5 ru
 | `lib/RankBar.svelte` | 9-pip rank strip with current label and "current/total" score. |
 | `lib/Toast.svelte` | Top toast with 4 visual variants. Supports pangram flair. |
 | `lib/NewGame.svelte` | "Новая игра" button + difficulty preset chip + dropdown menu. |
+| `lib/HistoryModal.svelte` | "История" modal: last-10 (global) puzzles; click reopens one (continue playing). Per-row found-count is this browser's localStorage. |
 | `lib/store.svelte.ts` | Single `GameState` singleton: puzzle, found, toast, derived score/rank/toNext. |
-| `lib/api.ts` | Typed fetch wrappers for the 4 endpoints. |
-| `lib/persist.ts` | Per-puzzle localStorage keyed by puzzle id (interim — server-side state is deferred). |
+| `lib/api.ts` | Typed fetch wrappers for the API endpoints. |
+| `lib/persist.ts` | localStorage: per-puzzle found-words (`rsb:found:{id}`) + this browser's active puzzle id (`rsb:active`). |
 
 Vite proxies `/api/*` to `http://localhost:8000` (path preserved — the backend mounts its router at `/api`, so dev and prod paths match). Run `npm run dev` in `frontend/` after starting `uv run uvicorn rsb.api:app` in `backend/`.
 
