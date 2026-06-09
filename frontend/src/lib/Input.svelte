@@ -41,7 +41,17 @@
   });
 
   let hasInvalid = $derived(chars.some((c) => !c.valid));
-  let allLegal = $derived(chars.length > 0 && !hasInvalid);
+
+  // The center letter (Ё folded to Е) — every word must contain it. Mirrors
+  // the server-side rule in api._hive_rejection; the server is the authority.
+  let centerFolded = $derived.by(() => {
+    const c = (game.puzzle?.center ?? "").toLowerCase();
+    return c === "ё" ? "е" : c;
+  });
+  let hasCenter = $derived(
+    chars.some((c) => (c.ch === "ё" ? "е" : c.ch) === centerFolded),
+  );
+  let allLegal = $derived(chars.length > 0 && !hasInvalid && hasCenter);
 
   function onKey(e: KeyboardEvent) {
     if (e.key === "Enter") {
@@ -58,8 +68,9 @@
 
   async function submit() {
     if (!value.trim()) return;
-    if (hasInvalid) {
-      // Local-only rejection feedback — no server round-trip needed.
+    if (hasInvalid || !hasCenter) {
+      // Local-only rejection feedback — no server round-trip needed. The
+      // status row already names the reason (вне набора / нет центра).
       shake();
       return;
     }
@@ -160,12 +171,14 @@
     >
       <span class="fb-mark" aria-hidden="true">
         {#if fb.kind === "already_found"}↺
-        {:else if fb.kind === "not_in_set"}✗
-        {:else}?{/if}
+        {:else if fb.kind === "unparseable"}?
+        {:else}✗{/if}
       </span>
       <div class="fb-body">
         <div class="fb-kicker">
           {#if fb.kind === "already_found"}Уже&nbsp;найдено
+          {:else if fb.kind === "outside_hive"}Вне&nbsp;набора
+          {:else if fb.kind === "missing_center"}Без&nbsp;центра
           {:else if fb.kind === "not_in_set"}Не&nbsp;в&nbsp;наборе
           {:else}Нет&nbsp;формы{/if}
         </div>
@@ -177,6 +190,12 @@
               <span class="fb-lemma">{fb.lemma}</span>
             {/if}
             <span class="fb-soft">— уже в списке</span>
+          {:else if fb.kind === "outside_hive"}
+            <span class="fb-form">{fb.form}</span>
+            <span class="fb-soft">— есть буквы вне набора</span>
+          {:else if fb.kind === "missing_center"}
+            <span class="fb-form">{fb.form}</span>
+            <span class="fb-soft">— нет центральной буквы</span>
           {:else if fb.kind === "not_in_set"}
             <span class="fb-form">{fb.form}</span>
             <span class="fb-soft">— нет в сегодняшнем наборе</span>
@@ -193,6 +212,8 @@
         <span class="hint">Нажимай&nbsp;соты&nbsp;или&nbsp;печатай — Ё&nbsp;входит&nbsp;в&nbsp;Е</span>
       {:else if hasInvalid}
         <span class="hint warn">Есть&nbsp;буквы&nbsp;вне&nbsp;набора</span>
+      {:else if !hasCenter}
+        <span class="hint warn">Нет&nbsp;центральной&nbsp;буквы&nbsp;{centerFolded.toUpperCase()}</span>
       {:else if allLegal}
         <span class="hint ok">{chars.length}&nbsp;{chars.length === 1 ? "буква" : chars.length < 5 ? "буквы" : "букв"}&nbsp;·&nbsp;готов&nbsp;к&nbsp;вводу</span>
       {/if}
@@ -376,7 +397,9 @@
     top: 0; bottom: 0; left: 0;
     width: 4px;
   }
-  .feedback.kind-not_in_set::before    { background: var(--red); }
+  .feedback.kind-not_in_set::before,
+  .feedback.kind-outside_hive::before,
+  .feedback.kind-missing_center::before { background: var(--red); }
   .feedback.kind-unparseable::before   { background: var(--plum); }
   .feedback.kind-already_found::before { background: var(--ink-mute); }
 
@@ -388,7 +411,9 @@
     padding-top: 0.1rem;
     padding-left: 0.25rem;
   }
-  .feedback.kind-not_in_set .fb-mark    { color: var(--red); }
+  .feedback.kind-not_in_set .fb-mark,
+  .feedback.kind-outside_hive .fb-mark,
+  .feedback.kind-missing_center .fb-mark { color: var(--red); }
   .feedback.kind-unparseable .fb-mark   { color: var(--plum); }
   .feedback.kind-already_found .fb-mark { color: var(--ink-mute); }
 
@@ -422,7 +447,9 @@
     color: var(--ink);
     line-height: 1;
   }
-  .feedback.kind-not_in_set .fb-form { color: var(--red); }
+  .feedback.kind-not_in_set .fb-form,
+  .feedback.kind-outside_hive .fb-form,
+  .feedback.kind-missing_center .fb-form { color: var(--red); }
   .fb-arrow {
     font-family: var(--mono);
     color: var(--ink-faint);

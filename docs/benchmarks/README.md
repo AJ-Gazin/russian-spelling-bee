@@ -2,9 +2,11 @@
 
 Objective measurements of how each word-selection strategy behaves at scale, so we can compare strategies across iterations without relying on memory or anecdote.
 
+> **Note (2026-06-09):** the difficulty presets (`top_n`) were removed from the product, so new runs sample a single config — the production defaults (`api.py:_DEFAULT_REAL_CFG`). Historical runs below predate that and carry four preset rows each; compare new runs against their **Эксперт** row (`top_n=None` ⇒ the same full-lexicon config).
+
 Each run captures:
 
-- **Avg / median / stdev / range** of word length per difficulty preset
+- **Avg / median / stdev / range** of word length
 - **Lemmas per puzzle** distribution
 - **Pangrams per puzzle** rate
 - **Word-length histogram** in buckets (4, 5, 6, 7, 8, 9–10, 11+)
@@ -30,10 +32,9 @@ The fingerprint is a sha1 over the sorted lemma set; if it changes between runs,
 
 ## Methodology
 
-- Seeds are deterministic (0 .. N-1) per preset. Two runs against the same dictionary and the same strategy must produce identical output.
-- Per-preset config softening mirrors the live API (`backend/src/rsb/api.py:admin_generate`). When that softening changes, `sample_puzzles.py` and the API need to change together.
-- The four production difficulty presets are sampled (Лёгкий / Средний / Сложный / Эксперт). When a preset list changes, sample_puzzles.py's `PRESETS` constant and `frontend/src/lib/NewGame.svelte` need to stay in sync.
-- Default sample size is 50 puzzles per preset (200 total). Tighter confidence intervals: bump `--n` to 100 or 200; runtime scales linearly.
+- Seeds are deterministic (0 .. N-1). Two runs against the same dictionary and the same strategy must produce identical output.
+- The sampled config mirrors the live API's production defaults (`sample_puzzles.py:BASE_CFG` ↔ `api.py:_DEFAULT_REAL_CFG`). When the API defaults change, change both together.
+- Default sample size is 50 puzzles. Tighter confidence intervals: bump `--n` to 100 or 200; runtime scales linearly.
 
 ## Reference points
 
@@ -46,7 +47,7 @@ External numbers we benchmark against (see `STATUS.md` for citations):
 
 Newest first. Each row links to the run's `report.md`.
 
-| Date | Strategy | n/preset | Dict size | Headline finding |
+| Date | Strategy | n | Dict size | Headline finding |
 |---|---|---|---|---|
 | 2026-05-26 | [folds-v1](runs/2026-05-26-folds-v1/report.md) | 50 | 42,775 (`9813284ce0af`) | Per-POS folding rules shipped (reflexive alias + 3 mergers; see [`docs/folding-rules.md`](../folding-rules.md)). Generation behavior virtually identical to v2 — avg word length and lemmas/puzzle within ±0.7. Expected: the 81 mergers are low-freq and aliases don't affect generation, only lookup acceptance (which doesn't show up in these benchmarks). |
 | 2026-05-26 | [form-fitness-v2](runs/2026-05-26-form-fitness-v2/report.md) | 50 | 42,856 (`d3782febd7a8`) | Yo-recovery baseline (+1,150 lemmas vs v1). Avg word length and lemmas/puzzle effectively unchanged from v1; the new ё-lemmas didn't shift puzzle shape because Ё is folded to Е for hive composition. |
@@ -57,6 +58,6 @@ Newest first. Each row links to the run's `report.md`.
 When a new run completes, prepend a row to the table above with:
 
 - `[YYYY-MM-DD label](runs/YYYY-MM-DD-label/report.md)` in the Strategy column
-- The headline finding in 1 short sentence in the Notes column (e.g., "Avg word length 6.10 across all presets; Лёгкий below NYT-equivalent answer count")
+- The headline finding in 1 short sentence in the Notes column (e.g., "Avg word length 6.10; lemmas/puzzle up 8% vs previous strategy")
 
 Do not delete old runs — even superseded strategies are reference points.

@@ -41,6 +41,8 @@ export interface Puzzle {
 export type GuessStatus =
   | "accepted"
   | "already_found"
+  | "outside_hive" // form uses a letter not in the hive (server-side authority)
+  | "missing_center" // form lacks the center letter
   | "not_in_set"
   | "unparseable";
 

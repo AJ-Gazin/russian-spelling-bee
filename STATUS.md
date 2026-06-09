@@ -2,7 +2,7 @@
 
 **This file is the canonical description of what is actually live on this branch.** When behavior changes, update this file in the same change. Stale `STATUS.md` is a bug. The original planning document at [`docs/original-design.md`](docs/original-design.md) is preserved as a frozen reference; where the two diverge, `STATUS.md` wins. The active work queue is [`todo.md`](todo.md). Empirical numbers per generation strategy live in [`docs/benchmarks/`](docs/benchmarks/README.md) — run `backend/scripts/sample_puzzles.py` to add a new entry whenever a generation/selection strategy changes.
 
-> **Last meaningful update:** **Constructible forms in the answer key + homonym cycling.** (1) Inflected form *strings* are now stored per lemma (`lemmas.forms`, schema **v4**; `form_masks` derived from them at load). The generator records each lemma's hive-constructible forms on `ScoredLemma.forms`, the API returns them, and `AnswersModal.svelte` shows them under every headword — so a player looking up answers learns the *typeable* word (`линь`→`линя`, `лисёнок`→`лисят`), not an untypeable citation form. (2) `Lemmatizer.resolve` is now `found`-aware: a homographic string cycles through its in-set lemmas (`Resolution.reachable`), each earnable once; the guess response carries `pos` + `homonym_remaining`, and the UI refills the input + prompts "enter again" with a POS label. Previously shipped: per-POS folding rules (see [`docs/folding-rules.md`](docs/folding-rules.md)). **Deferred:** pangram findability/homonym-safety (Task 2 — see `todo.md`).
+> **Last meaningful update:** **Hive/center enforcement on guesses + abuse resistance.** (1) The guess endpoint now validates the *typed form* before any morphology: it must use only hive letters and contain the center (`api._hive_rejection`; new statuses `outside_hive` / `missing_center`). This closes the conceptual hole where form-level fitness admitted a lemma via one inflection but *any* inflection — including a center-less citation form like *сеть* in an и-center puzzle — was accepted. The client mirrors the rule for instant feedback; the server is the authority. (2) Abuse resistance for the public Space: `POST /api/admin/daily/{id}` is gated by `RSB_ADMIN_TOKEN` (when set); `/admin/generate` stays open (the "Новая игра" button calls it) but is rate-limited (`RSB_GENERATE_PER_HOUR`) and the puzzle pool is pruned past `RSB_MAX_PUZZLES` (history + daily pin + newest N always survive) so Turso growth is bounded. Previously shipped: constructible forms in the answer key + homonym cycling; per-POS folding rules (see [`docs/folding-rules.md`](docs/folding-rules.md)). **Pending decision:** pangram-bonus integrity proposal (Task 2 — see `todo.md`).
 
 ---
 
@@ -20,13 +20,13 @@
 | Overrides | live; YAML include/exclude/aliases; 27 seeded excludes; ё-normalized at load; aliases loaded but unused | `backend/src/rsb/overrides.py`, `backend/data/overrides.yaml` |
 | Folding rules (per-POS) | live; reflexive aliases (X↔X+ся) + 3 merger rules with top-parse + POS + 20-ipm guards; 2,893 aliases + 81 mergers; see [`docs/folding-rules.md`](docs/folding-rules.md) | `backend/src/rsb/folds.py`, `backend/data/fold-report.md` |
 | Scoring + ranks | live; planning-doc table | `backend/src/rsb/scoring.py` |
-| Puzzle generator | live; constraint-checked; deterministic under seed; `top_n` difficulty knob; **form-level fitness** | `backend/src/rsb/generator.py` |
+| Puzzle generator | live; constraint-checked; deterministic under seed; **form-level fitness** | `backend/src/rsb/generator.py` |
 | Lemma store (SQLite, read-only at runtime) | live; `lemmas` (+ `forms` strings) + `aliases` tables (schema v4) — baked into the Docker image | `backend/src/rsb/store.py` |
 | State store (puzzles; future: scores) | live; Protocol with two impls (`LocalSqliteStateStore` for dev, `TursoStateStore` for prod) selected by env vars | `backend/src/rsb/state_store.py` |
-| FastAPI server | live; endpoints under `/api` (puzzle/daily/current/by-id, guess, history, admin generate/daily); serves the built Svelte SPA at `/` when `./static/` exists | `backend/src/rsb/api.py` |
-| Svelte 5 frontend | live; full play loop in browser; difficulty selector | `frontend/src/` |
+| FastAPI server | live; endpoints under `/api` (puzzle/daily/current/by-id, guess, history, admin generate/daily); **hive/center guess validation**; admin token + rate limit + pool pruning; serves the built Svelte SPA at `/` when `./static/` exists | `backend/src/rsb/api.py` |
+| Svelte 5 frontend | live; full play loop in browser | `frontend/src/` |
 | HF Space deploy | live at https://ajgazin-russian-spelling-bee.hf.space; multi-stage Dockerfile; `scripts/deploy_hf.sh` for one-command redeploy | `Dockerfile`, `scripts/deploy_hf.sh`, `docs/deploy-huggingface.md` |
-| Tests | 73 passing | `backend/tests/*.py` |
+| Tests | 89 passing | `backend/tests/*.py` |
 | UX polish (final pass) | **partial — see "Open UX work" below** | `frontend/src/lib/*.svelte` |
 
 ---
@@ -37,7 +37,7 @@ The next session is a **UI/UX audit + polish pass**. The functionality is in pla
 
 Known UX issues / opportunities (not exhaustive — audit needed):
 
-1. **Header wraps awkwardly when the difficulty chip is wide.** "Русский Spelling Bee" wraps to two lines because the dropdown chip ("Эксперт ▾") doesn't leave room. Either shrink the title, drop "Русский" to a subtitle, or restructure the header.
+1. **Header layout on narrow viewports.** The difficulty chip that originally caused "Русский Spelling Bee" to wrap is gone (presets removed), but the header hasn't been re-audited since — verify the title/buttons row on narrow widths.
 2. **Accept toast doesn't show the lemma resolution.** `Toast.svelte` is already coded to render *form → lemma* when they differ, but only the lemma reaches the toast — `game.guess()` doesn't currently pass the raw `form` through to the toast. Trivial wire-up; see `lib/store.svelte.ts` → `showToast` → `handleGuessResponse`.
 3. **Rank pip strip is functional but plain.** Real puzzles have a wide score distribution (e.g. 199 pts across 9 ranks ⇒ varied pip spacing). Could use a refresh now that we have real numbers to design against.
 4. **Hive letter typography uses Georgia.** Looks fine for Cyrillic, but a more deliberate font choice (Old Standard TT, PT Serif, or a custom display face) might give the puzzle more identity.
@@ -111,7 +111,8 @@ Implemented in `backend/src/rsb/lemmatizer.py`. `resolve(form, valid_lemmas, fou
 - A player input is accepted iff **any** `pymorphy3` parse normalizes to a lemma in the puzzle's valid-lemma set.
 - **Homonym cycling.** A typed string can map to several in-set lemmas (a homonym — e.g. *линял* → `линять`(гл.)/`линялый`(прил.); *стекла* → `стекло`/`стечь`). `resolve` collects **all** reachable in-set lemmas in `pymorphy3.score` order (`Resolution.reachable`) and returns the first one **not yet in `found`**. Re-entering the same string therefore walks to the next homonym, so each is separately earnable. When every reachable lemma is already found, status is `already_found`.
 - pymorphy3 already canonicalizes player Е→Ё internally (so *елка* parses to *ёлка*). We rely on that; lemmas are stored Ё-aware. A defensive `fold_yo` retry catches the rare case where a parse lemma differs from a valid-set entry only by ё↔е (e.g. a hand-curated stub spells a lemma without ё); when it fires, the resolved lemma is the *valid-set* spelling and a warning is logged.
-- Statuses: `accepted` (+ `reachable`), `already_found`, `not_in_set` (parsed cleanly but no parse resolves to a puzzle lemma), `unparseable` (pymorphy3 returned no parses).
+- Statuses from the lemmatizer: `accepted` (+ `reachable`), `already_found`, `not_in_set` (parsed cleanly but no parse resolves to a puzzle lemma), `unparseable` (pymorphy3 returned no parses).
+- **Hive/center validation happens before the lemmatizer** (in `api._hive_rejection`, not in `lemmatizer.py`): the typed form itself must use only hive letters (`outside_hive` otherwise) and contain the center letter (`missing_center` otherwise). This is the game's defining constraint applied to the *form*, independent of which lemma it resolves to — necessary because form-level fitness admits a lemma when *some* inflection fits, so other inflections of an in-set lemma may escape the hive or lack the center. `Input.svelte` mirrors both checks client-side (blocked submit + named reason, no round-trip); the server is the authority for non-UI clients.
 - The guess endpoint passes the client's `found_lemmas` as `found`, and sets `homonym_remaining` on the response when `reachable` still holds an unfound lemma after this accept — the UI uses it to prompt the player to enter the string again. POS of the accepted lemma is returned for homonym disambiguation in the UI.
 - **Alias fallback (folding rules):** lemma→lemma aliases (loaded from the `aliases` table at startup) extend `reachable` when a parse's normal_form isn't directly in the valid set. This is the path that makes a player typing *наедал* — pymorphy3-lemmatized to *наедать*, not in L–S — credit *наедаться* via the reflexive alias. See [`docs/folding-rules.md`](docs/folding-rules.md).
 
@@ -145,7 +146,7 @@ A lemma belongs in the puzzle's answer list iff **at least one of its inflected 
 - **Storage:** the inflected form *strings* (Ё-aware) are stored per lemma in `lemmas.forms TEXT` (comma-separated), enumerated at build time via pymorphy3's lexeme. `Lemma.form_masks: frozenset[int]` (the 31-bit letter-set masks used by the subset test) is **derived from those strings at load** — single source of truth, no drift. Legacy DBs without `forms` re-enumerate on first read (one-time). Schema is **v4**; the older `form_masks` column is retained for backward compat but no longer written.
 - **Why store the strings:** the citation form often carries a final ь (сеть, линь) or a letter outside the hive (лисёнок needs к) that the *other* forms don't — so the headword alone is untypeable. The answer key shows the **constructible forms** (`сети`, `линя`, `лисят`) as a learning aid. Per puzzle, the generator filters each lemma's forms to those that fit the hive (subset ∧ contains center) and stores them on `ScoredLemma.forms` (ordered shortest-first); the API returns them and `AnswersModal.svelte` renders them under each headword.
 - **Pangram still uses `Lemma.mask`** (the citation form), so a flagged pangram is always a recognizable word, not an obscure participle that happens to use all 7 letters. *(Pangram-findability/homonym-safety is a separate, deferred task — see `todo.md`.)*
-- **Calibration follow-up:** `min_lemmas`/`max_lemmas` bands and `top_n` thresholds will likely need re-tuning since more lemmas fit per hive — see `todo.md`.
+- **Calibration follow-up:** `min_lemmas`/`max_lemmas` bands will likely need re-tuning since more lemmas fit per hive — see `todo.md`.
 
 Two configs live in `api.py` and are selected at startup based on whether the DB dictionary is populated:
 
@@ -159,24 +160,7 @@ Two configs live in `api.py` and are selected at startup based on whether the DB
 
 Not yet implemented: per-weekday difficulty tuning (Mon–Wed 25–35 vs. Thu–Sun 50–70). That ties to daily-rollover, which is deferred.
 
----
-
-## Difficulty knob (`top_n`)
-
-`GeneratorConfig.top_n` restricts the dictionary to the top-N most-frequent lemmas before sampling. Smaller N ⇒ easier vocabulary.
-
-`POST /admin/generate` accepts a JSON body with `top_n` (and optional `min_lemmas`/`max_lemmas`/`require_pangram`/`seed`). When `top_n ≤ 5000`, the handler auto-scales `min_lemmas = max(8, min(25, top_n // 200))` and drops `pangram_freq_floor` to 0 — small pools rarely satisfy the planning-doc defaults.
-
-UI: `NewGame.svelte` is a "Новая игра" button paired with a dropdown chip offering 4 presets:
-
-| Label | `top_n` |
-|---|---|
-| Лёгкий | 2,000 |
-| Средний | 6,000 |
-| Сложный | 15,000 |
-| Эксперт | unlimited (all ~42k) |
-
-Selection persists in the chip.
+**Removed:** the `top_n` difficulty knob (vocabulary-restricted presets Лёгкий/Средний/Сложный/Эксперт). The full lexicon is always in play now; acknowledging rare words is tracked in `todo.md` ("Word rarity representation"). Historical benchmark runs under `docs/benchmarks/runs/` still carry per-preset rows — compare new runs against their Эксперт row.
 
 ---
 
@@ -190,12 +174,12 @@ Implemented in `backend/src/rsb/api.py` (FastAPI). All routes are mounted on an 
 | GET | `/api/puzzle/daily` | — | The pinned daily/featured puzzle — the default a brand-new browser opens on. Stable: `/admin/generate` does NOT move it. Set at boot (seed); re-pin via `/admin/daily/{id}`. |
 | GET | `/api/puzzle/current` | — | Latest puzzle by id. Auto-generates one on first boot if the store is empty. (The frontend uses `daily` + the browser's stored active id, not this.) |
 | GET | `/api/puzzle/{id}` | — | 404 if not found. Used to reopen the browser's active puzzle and history entries. |
-| POST | `/api/puzzle/{id}/guess` | `{form, found_lemmas}` | Returns `{status, lemma?, points?, is_pangram?, pos?, homonym_remaining, candidates}`. On `accepted`, records the puzzle into history (idempotent). `homonym_remaining`=true ⇒ same string reaches another unfound homonym (re-submit to cycle). |
+| POST | `/api/puzzle/{id}/guess` | `{form, found_lemmas}` | Returns `{status, lemma?, points?, is_pangram?, pos?, homonym_remaining, candidates}`. The typed form is validated against the hive first (`outside_hive` / `missing_center`) before lemma resolution. On `accepted`, records the puzzle into history (idempotent). `homonym_remaining`=true ⇒ same string reaches another unfound homonym (re-submit to cycle). |
 | GET | `/api/history` | `?limit=10` | Last `limit` puzzles that have had ≥1 correct guess, newest first. Global/shared, Turso-durable. `[{id, letters, center, total_points, started_at}]`. |
-| POST | `/api/admin/generate` | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | All fields optional; empty body uses server defaults. Saves to the shared pool but does NOT change the daily. |
-| POST | `/api/admin/daily/{id}` | — | Pin an existing puzzle as the daily/featured default. 404 if the id is unknown. |
+| POST | `/api/admin/generate` | `{min_lemmas?, max_lemmas?, require_pangram?, seed?}` | All fields optional; empty body uses server defaults. Saves to the shared pool but does NOT change the daily. Open (the "Новая игра" button calls it) but rate-limited globally (`RSB_GENERATE_PER_HOUR`, default 30/h ⇒ 429 past it); past `RSB_MAX_PUZZLES` (default 200) the pool is pruned of old never-played puzzles (history + daily + newest N survive). |
+| POST | `/api/admin/daily/{id}` | — | Pin an existing puzzle as the daily/featured default. 404 if the id is unknown. Requires header `X-Admin-Token` matching `RSB_ADMIN_TOKEN` when that env var is set (401 otherwise); unset ⇒ open (local dev). |
 
-`status` ∈ {`accepted`, `already_found`, `not_in_set`, `unparseable`}.
+`status` ∈ {`accepted`, `already_found`, `outside_hive`, `missing_center`, `not_in_set`, `unparseable`}.
 
 **Per-browser vs shared model:** each browser tracks its own *active* puzzle in `localStorage` (`rsb:active`) plus per-puzzle found-words (`rsb:found:{id}`). Pressing "New Game" generates a puzzle and rebinds only the local active id — other visitors are untouched. The **daily** puzzle (new-visitor default) and the **history** list are the shared surfaces. Server-side per-player scoring is still deferred; the client passes `found_lemmas` on every guess.
 
@@ -213,7 +197,7 @@ Svelte 5 + Vite + TypeScript single-page app under `frontend/`. Uses Svelte 5 ru
 | `lib/FoundList.svelte` | Two-column alphabetized list; pangrams styled gold. |
 | `lib/RankBar.svelte` | 9-pip rank strip with current label and "current/total" score. |
 | `lib/Toast.svelte` | Top toast with 4 visual variants. Supports pangram flair. |
-| `lib/NewGame.svelte` | "Новая игра" button + difficulty preset chip + dropdown menu. |
+| `lib/NewGame.svelte` | "Новая игра" button (difficulty presets removed — full lexicon always). |
 | `lib/HistoryModal.svelte` | "История" modal: last-10 (global) puzzles; click reopens one (continue playing). Per-row found-count is this browser's localStorage. |
 | `lib/store.svelte.ts` | Single `GameState` singleton: puzzle, found, toast, derived score/rank/toNext. |
 | `lib/api.ts` | Typed fetch wrappers for the API endpoints. |
@@ -241,6 +225,8 @@ The Space is a single Docker image bundling the Svelte SPA and FastAPI backend (
 | Neither | `LocalSqliteStateStore` at `data/rsb_state.db` (or `$RSB_STATE_DB`) | Dev default. Ephemeral on Spaces. |
 
 The lemma table is a separate concern — read-only, baked into the image, lives in `backend/data/rsb.db`.
+
+**Abuse-resistance env vars** (all optional): `RSB_ADMIN_TOKEN` (set as a Space secret — gates the daily re-pin; unset ⇒ open), `RSB_GENERATE_PER_HOUR` (default 30; ≤0 disables), `RSB_MAX_PUZZLES` (default 200; ≤0 disables pruning).
 
 **Redeploy:** `scripts/deploy_hf.sh` from repo root. It stages a clean tree in `/tmp`, swaps in the HF-flavored `docs/space.README.md` as the Space's `README.md`, and `hf upload`s. (Staging is necessary because `hf upload` chokes on a CWD containing `.venv`.)
 

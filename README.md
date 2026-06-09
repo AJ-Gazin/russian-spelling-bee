@@ -17,7 +17,7 @@ backend/            Python (uv-managed, Python 3.12). pymorphy3 + FastAPI.
                     scoring, store, state_store, overrides, api).
   scripts/          build_dictionary.py — fetches L–S frequency list and compiles
                     the lemma table.
-  tests/            pytest. 65 passing.
+  tests/            pytest. 89 passing.
   data/             stub_lemmas.tsv (checked in), overrides.yaml (checked in),
                     rsb.db (gitignored — generated).
 
@@ -50,7 +50,7 @@ cd backend
 uv sync                                      # first time only
 uv run python scripts/build_dictionary.py    # one-time: fetches L–S, compiles ~43k lemmas into SQLite (~30s)
 uv run uvicorn rsb.api:app --reload          # dev server on :8000
-uv run pytest                                # 65 tests
+uv run pytest                                # 89 tests
 ```
 
 If `build_dictionary.py` hasn't been run yet, the API falls back to the small hand-curated stub at `backend/data/stub_lemmas.tsv`. The auto-generated puzzles will be tiny but the play loop works.
@@ -84,12 +84,15 @@ All routes are namespaced under `/api`:
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | GET  | `/api/health`                |  | `{status, state_store}` |
-| GET  | `/api/puzzle/current`        |  | current puzzle |
+| GET  | `/api/puzzle/daily`          |  | the pinned daily/featured puzzle (new-visitor default) |
+| GET  | `/api/puzzle/current`        |  | latest stored puzzle |
 | GET  | `/api/puzzle/{id}`           |  | a specific stored puzzle |
-| POST | `/api/puzzle/{id}/guess`     | `{form, found_lemmas}` | `{status, lemma?, points?, is_pangram?, candidates}` |
-| POST | `/api/admin/generate`        | `{top_n?, min_lemmas?, max_lemmas?, require_pangram?, seed?}` | a new stored puzzle |
+| GET  | `/api/history`               | `?limit=10` | recently played puzzles (≥1 correct guess), newest first |
+| POST | `/api/puzzle/{id}/guess`     | `{form, found_lemmas}` | `{status, lemma?, points?, is_pangram?, pos?, homonym_remaining, candidates}` |
+| POST | `/api/admin/generate`        | `{min_lemmas?, max_lemmas?, require_pangram?, seed?}` | a new stored puzzle (rate-limited; pool pruned past a cap) |
+| POST | `/api/admin/daily/{id}`      | header `X-Admin-Token` when `RSB_ADMIN_TOKEN` is set | re-pins the daily puzzle |
 
-`status` ∈ {`accepted`, `already_found`, `not_in_set`, `unparseable`}. The frontend talks to all of these via the Vite `/api` proxy in dev, and directly (same origin) in production.
+`status` ∈ {`accepted`, `already_found`, `outside_hive`, `missing_center`, `not_in_set`, `unparseable`}. The typed form is validated against the hive (only hive letters, must contain the center) before lemma resolution. The frontend talks to all of these via the Vite `/api` proxy in dev, and directly (same origin) in production.
 
 ---
 

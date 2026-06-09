@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS featured (
 """
 
 
+# Shared by both implementations (plain SQLite syntax, works on libsql too).
+# A puzzle survives pruning when it was ever played (history), is the pinned
+# daily (featured), or is among the newest `keep_recent` rows.
+_PRUNE_SQL = """
+DELETE FROM puzzles
+WHERE id NOT IN (SELECT puzzle_id FROM history)
+  AND id NOT IN (SELECT puzzle_id FROM featured)
+  AND id NOT IN (SELECT id FROM puzzles ORDER BY id DESC LIMIT ?)
+"""
+
+
 # ---------- serialization (shared by both implementations) ----------------
 
 
@@ -163,6 +174,7 @@ class StateStore(Protocol):
     ) -> list[tuple[int, str, str, int, str]]: ...
     def get_featured_puzzle(self) -> tuple[int, Puzzle] | None: ...
     def set_featured(self, puzzle_id: int) -> None: ...
+    def prune_puzzles(self, *, keep_recent: int) -> int: ...
     def close(self) -> None: ...
 
 
@@ -272,6 +284,14 @@ class LocalSqliteStateStore:
                 "INSERT OR REPLACE INTO featured(id, puzzle_id) VALUES(1, ?)",
                 (puzzle_id,),
             )
+
+    def prune_puzzles(self, *, keep_recent: int) -> int:
+        """Delete old puzzles nobody played: keep everything in history, the
+        featured (daily) pin, and the newest `keep_recent` rows. Bounds pool
+        growth from the open /admin/generate route."""
+        with self._lock:
+            cur = self._conn.execute(_PRUNE_SQL, (keep_recent,))
+            return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     def close(self) -> None:
         with self._lock:
@@ -399,6 +419,15 @@ class TursoStateStore:
                 (puzzle_id,),
             )
             self._conn.commit()
+
+    def prune_puzzles(self, *, keep_recent: int) -> int:
+        """See LocalSqliteStateStore.prune_puzzles — same semantics."""
+        with self._lock:
+            cur = self._conn.execute(_PRUNE_SQL, (keep_recent,))
+            self._conn.commit()
+            # libsql's cursor.rowcount can be -1 over HTTP; report 0 then.
+            n = getattr(cur, "rowcount", -1)
+            return n if isinstance(n, int) and n > 0 else 0
 
     def close(self) -> None:
         # libsql.Connection has no explicit close in 0.1.x; let GC handle it.

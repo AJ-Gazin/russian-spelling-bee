@@ -31,8 +31,15 @@ export interface Toast {
 
 // Inline rejection feedback rendered next to the input — replaces the
 // previous top-of-viewport toast for rejection cases so users can actually
-// read the reason without time pressure.
-export type FeedbackKind = "already_found" | "not_in_set" | "unparseable";
+// read the reason without time pressure. "outside_hive" / "missing_center"
+// are normally caught client-side before submit (Input.svelte), so seeing
+// them here means a non-UI path or a client/server rule mismatch.
+export type FeedbackKind =
+  | "already_found"
+  | "outside_hive"
+  | "missing_center"
+  | "not_in_set"
+  | "unparseable";
 
 export interface Feedback {
   kind: FeedbackKind;
@@ -155,6 +162,12 @@ class GameState {
           form,
           lemma: res.lemma ?? undefined,
         });
+        return;
+      case "outside_hive":
+        this.showFeedback({ kind: "outside_hive", form });
+        return;
+      case "missing_center":
+        this.showFeedback({ kind: "missing_center", form });
         return;
       case "not_in_set":
         this.showFeedback({

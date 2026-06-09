@@ -33,6 +33,15 @@ def client(tmp_path_factory):
     os.environ.update(saved_turso)
 
 
+def _typeable(puzzle: dict) -> dict:
+    """A lemma whose citation form is itself constructible from the hive
+    (it appears in its own `forms`) — guaranteed to pass the server-side
+    hive/center validation when typed as-is."""
+    target = next((l for l in puzzle["lemmas"] if l["lemma"] in l["forms"]), None)
+    assert target is not None, "puzzle has no self-fitting lemma"
+    return target
+
+
 def test_current_puzzle_autocreated(client):
     r = client.get("/api/puzzle/current")
     assert r.status_code == 200, r.text
@@ -59,15 +68,17 @@ def test_get_missing_puzzle_404(client):
 def test_guess_accepted_and_already_found(client):
     cur = client.get("/api/puzzle/current").json()
     pid = cur["id"]
-    # Pick the first lemma in the puzzle as a guaranteed-valid guess.
-    target = cur["lemmas"][0]
-    form = target["lemma"]  # just use the lemma itself — it parses to itself.
+    # A lemma whose citation form is typeable — passes hive/center validation.
+    form = _typeable(cur)["lemma"]
     r = client.post(f"/api/puzzle/{pid}/guess", json={"form": form, "found_lemmas": []})
     assert r.status_code == 200
     j = r.json()
     assert j["status"] == "accepted"
-    assert j["lemma"] == target["lemma"]
-    assert j["points"] == target["points"]
+    # Homonym cycling may credit a different in-set lemma than the one we
+    # picked; whatever was credited must be a puzzle answer with its points.
+    by_lemma = {l["lemma"]: l for l in cur["lemmas"]}
+    assert j["lemma"] in by_lemma
+    assert j["points"] == by_lemma[j["lemma"]]["points"]
 
     # Re-submit the same string, accumulating found lemmas. If the string is a
     # homonym it cycles through the other in-set meanings (each accepted once,
@@ -104,23 +115,39 @@ def test_puzzle_lemmas_include_constructible_forms(client):
             assert center in folded, f"{l['lemma']}: form {w} lacks the center"
 
 
+def test_guess_outside_hive(client):
+    cur = client.get("/api/puzzle/current").json()
+    pid = cur["id"]
+    # Ъ is excluded from every hive, so any form containing it must be
+    # rejected by the hive check — before morphology ever runs.
+    r = client.post(f"/api/puzzle/{pid}/guess", json={"form": "съезд"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "outside_hive"
+    # Non-alphabet input is the same rejection (it can't be built from the hive).
+    r = client.post(f"/api/puzzle/{pid}/guess", json={"form": "—"})
+    assert r.json()["status"] == "outside_hive"
+
+
+def test_guess_missing_center(client):
+    cur = client.get("/api/puzzle/current").json()
+    pid = cur["id"]
+    # A string of one non-center hive letter: every char is legal, but the
+    # center is absent — the game's defining constraint.
+    outer = cur["letters"][1]
+    r = client.post(f"/api/puzzle/{pid}/guess", json={"form": outer * 4})
+    assert r.status_code == 200
+    assert r.json()["status"] == "missing_center"
+
+
 def test_guess_not_in_set(client):
     cur = client.get("/api/puzzle/current").json()
     pid = cur["id"]
-    # Pick a real Russian word that's almost certainly *not* in this small puzzle.
-    r = client.post(f"/api/puzzle/{pid}/guess", json={"form": "автомобилестроение"})
+    # The center letter repeated: passes hive validation by construction, but
+    # no real puzzle answer — pymorphy3 either predicts some out-of-set lemma
+    # (not_in_set) or returns nothing (unparseable). Both are valid here.
+    r = client.post(f"/api/puzzle/{pid}/guess", json={"form": cur["center"] * 4})
     assert r.status_code == 200
-    # Either it lemmatizes and falls outside (not_in_set), or pymorphy3 can't
-    # parse it (unparseable). Both are acceptable rejection paths for this test.
     assert r.json()["status"] in {"not_in_set", "unparseable"}
-
-
-def test_guess_unparseable(client):
-    cur = client.get("/api/puzzle/current").json()
-    pid = cur["id"]
-    r = client.post(f"/api/puzzle/{pid}/guess", json={"form": "—"})
-    assert r.status_code == 200
-    assert r.json()["status"] in {"unparseable", "not_in_set"}
 
 
 def test_daily_is_stable_across_generate(client):
@@ -154,7 +181,7 @@ def test_history_records_on_first_correct_guess(client):
     assert pid not in hist_ids
 
     # A correct guess enters it into history.
-    form = p["lemmas"][0]["lemma"]
+    form = _typeable(p)["lemma"]
     g = client.post(f"/api/puzzle/{pid}/guess", json={"form": form, "found_lemmas": []})
     assert g.json()["status"] == "accepted"
 
@@ -174,7 +201,7 @@ def test_history_newest_first_and_limit(client):
         p = client.post("/api/admin/generate").json()
         client.post(
             f"/api/puzzle/{p['id']}/guess",
-            json={"form": p["lemmas"][0]["lemma"], "found_lemmas": []},
+            json={"form": _typeable(p)["lemma"], "found_lemmas": []},
         )
         ids.append(p["id"])
 
@@ -190,9 +217,10 @@ def test_history_newest_first_and_limit(client):
 def test_history_mark_is_idempotent(client):
     p = client.post("/api/admin/generate").json()
     pid = p["id"]
-    form = p["lemmas"][0]["lemma"]
-    # Guess the same word twice — the second is already_found, not a new row.
-    client.post(f"/api/puzzle/{pid}/guess", json={"form": form, "found_lemmas": []})
-    client.post(f"/api/puzzle/{pid}/guess", json={"form": form, "found_lemmas": [form]})
+    form = _typeable(p)["lemma"]
+    # Guess the same word twice — the second guess never adds a new row
+    # (whether it's already_found or a cycled homonym; mark is per-puzzle).
+    g1 = client.post(f"/api/puzzle/{pid}/guess", json={"form": form, "found_lemmas": []}).json()
+    client.post(f"/api/puzzle/{pid}/guess", json={"form": form, "found_lemmas": [g1["lemma"]]})
     appearances = [e for e in client.get("/api/history").json() if e["id"] == pid]
     assert len(appearances) == 1

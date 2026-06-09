@@ -76,6 +76,8 @@ Or via UI: Space → Settings → Variables and secrets → add both.
 
 If either is missing, the Space silently falls back to ephemeral local SQLite (`GET /api/health` will report `"state_store":"local-sqlite"`).
 
+A third secret should also be set: `RSB_ADMIN_TOKEN` (any random string — e.g. `openssl rand -hex 24`). It gates `POST /api/admin/daily/{id}` (the daily re-pin) behind an `X-Admin-Token` header; when the secret is unset the route is open, which is fine locally but not on the public Space. Related abuse-resistance knobs (plain variables, optional — defaults are sensible): `RSB_GENERATE_PER_HOUR` (default 30) rate-limits the open `/api/admin/generate` route, and `RSB_MAX_PUZZLES` (default 200) caps the stored-puzzle pool by pruning old never-played puzzles. Together these keep the Turso DB from being ballooned by drive-by traffic.
+
 ## Redeploying
 
 From repo root:

@@ -14,11 +14,18 @@ and `/api/*` resolve first, so the SPA only catches the rest. In local dev
 the static dir is absent and `/` simply 404s; use Vite (`npm run dev` at
 :5173) which proxies `/api` to this server at :8000.
 
-The /guess response uses one of four statuses:
-  - "accepted"      with lemma + points + is_pangram + pos + homonym_remaining
-  - "already_found" with lemma
-  - "not_in_set"    (input parses, but to a lemma not in the puzzle)
-  - "unparseable"   (pymorphy3 had nothing for it)
+The /guess response uses one of six statuses:
+  - "accepted"       with lemma + points + is_pangram + pos + homonym_remaining
+  - "already_found"  with lemma
+  - "outside_hive"   (the typed form uses a letter not in the hive — checked
+                      before morphology; this is the server-side authority for
+                      the rule the client's input filter mirrors)
+  - "missing_center" (all letters legal, but the center letter is absent —
+                      the game's defining constraint, enforced on the typed
+                      form, not the lemma)
+  - "not_in_set"     (form fits the hive and parses, but no parse resolves to
+                      a puzzle lemma)
+  - "unparseable"    (pymorphy3 had nothing for it)
 
 The client sends its found-words list in the POST body as `found_lemmas: [...]`,
 keeping the API stateless (server-side per-player state is deferred). The
@@ -31,16 +38,19 @@ the first not-yet-found one, so re-entering the string walks to the next. The
 from __future__ import annotations
 
 import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .alphabet import fold_yo
 from .dictionary import Dictionary
 from .generator import GeneratorConfig, NoPuzzleFound, Puzzle, generate
 from .lemmatizer import Lemmatizer
@@ -66,6 +76,37 @@ class State:
         self.dictionary: Dictionary | None = None
         self.lemmatizer: Lemmatizer | None = None
         self.generator_cfg = _DEFAULT_STUB_CFG  # overwritten in lifespan once dict source is known
+        self.generate_limiter = _FixedWindowLimiter(per_hour=0)  # replaced in lifespan
+        self.max_puzzles = 0  # replaced in lifespan; 0 = unbounded
+
+
+class _FixedWindowLimiter:
+    """Global (per-process) fixed-window rate limit on puzzle generation.
+
+    Deliberately coarse: /admin/generate must stay open because the frontend's
+    "Новая игра" button calls it, so the goal is bounding drive-by abuse (state
+    store growth, generator CPU), not per-client fairness. A family playing
+    normally never gets near the ceiling. `per_hour <= 0` disables the limit.
+    """
+
+    def __init__(self, per_hour: int):
+        self.per_hour = per_hour
+        self._window_start = 0.0
+        self._count = 0
+        self._lock = threading.Lock()
+
+    def allow(self) -> bool:
+        if self.per_hour <= 0:
+            return True
+        now = time.monotonic()
+        with self._lock:
+            if now - self._window_start >= 3600.0:
+                self._window_start = now
+                self._count = 0
+            if self._count >= self.per_hour:
+                return False
+            self._count += 1
+            return True
 
 
 # Planning-doc defaults: tight, real-dictionary mode.
@@ -142,6 +183,14 @@ async def lifespan(_app: FastAPI):
     _state.state_store = state_store_mod.open_state_store()
     log.info("state store backend: %s", _state.state_store.backend)
 
+    # Abuse-resistance knobs for the open /admin/generate route (the frontend's
+    # "Новая игра" button calls it, so it can't be token-gated). Both bound
+    # state-store growth on the public Space; defaults are far above family use.
+    _state.generate_limiter = _FixedWindowLimiter(
+        per_hour=int(os.environ.get("RSB_GENERATE_PER_HOUR", "30"))
+    )
+    _state.max_puzzles = int(os.environ.get("RSB_MAX_PUZZLES", "200"))
+
     # Auto-generate a starter puzzle if state is empty, so the UI has
     # something to render on first run. The seed becomes the pinned "daily"
     # puzzle — the default a brand-new visitor opens on.
@@ -204,7 +253,9 @@ class GuessRequest(BaseModel):
 
 
 class GuessResponse(BaseModel):
-    status: str  # "accepted" | "already_found" | "not_in_set" | "unparseable"
+    # "accepted" | "already_found" | "outside_hive" | "missing_center"
+    # | "not_in_set" | "unparseable"
+    status: str
     lemma: str | None = None
     points: int | None = None
     is_pangram: bool | None = None
@@ -227,6 +278,41 @@ class GenerateRequest(BaseModel):
 
 
 # ---------- helpers ---------------------------------------------------------
+
+def _hive_rejection(form: str, letters: str, center: str) -> str | None:
+    """Server-side enforcement of the game's core constraint: the typed form
+    itself must be built from the hive's 7 letters AND contain the center.
+
+    Lemma-set membership alone is not enough — form-level fitness admits a
+    lemma when *some* inflection fits, so other inflections (including the
+    citation form, e.g. *сеть* in a puzzle it entered via *сети*) may lack the
+    center or use letters outside the hive. The client's input filter mirrors
+    the same rule for UX; this check is the authority.
+
+    Ё folds into Е on both sides, matching the display/input rule. Returns
+    "outside_hive" / "missing_center", or None when the form passes.
+    """
+    folded = fold_yo(form.strip().lower())
+    allowed = set(fold_yo(letters.lower()))
+    if not folded or any(ch not in allowed for ch in folded):
+        return "outside_hive"
+    if fold_yo(center.lower()) not in folded:
+        return "missing_center"
+    return None
+
+
+def _require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    """Shared-secret gate for true-admin routes (currently the daily re-pin).
+
+    Active only when RSB_ADMIN_TOKEN is set (it should be, on the public
+    Space); unset means open — local dev convenience. /admin/generate is
+    intentionally NOT gated: the frontend's "Новая игра" button calls it, so
+    it is protected by the rate limit + pruning instead.
+    """
+    expected = os.environ.get("RSB_ADMIN_TOKEN")
+    if expected and x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="Admin token required")
+
 
 def _puzzle_to_response(pid: int, p: Puzzle) -> PuzzleResponse:
     return PuzzleResponse(
@@ -303,6 +389,12 @@ def guess(puzzle_id: int, req: GuessRequest) -> GuessResponse:
         raise HTTPException(status_code=404, detail=f"No puzzle with id {puzzle_id}")
     _, puzzle = pair
 
+    # The hive/center constraint applies to the typed form and is checked
+    # before any morphology — see _hive_rejection.
+    rejection = _hive_rejection(req.form, puzzle.letters, puzzle.center)
+    if rejection is not None:
+        return GuessResponse(status=rejection)
+
     valid_set = {l.lemma for l in puzzle.lemmas}
     already = set(req.found_lemmas)
 
@@ -336,6 +428,11 @@ def guess(puzzle_id: int, req: GuessRequest) -> GuessResponse:
 
 @api.post("/admin/generate", response_model=PuzzleResponse)
 def admin_generate(req: GenerateRequest | None = None) -> PuzzleResponse:
+    if not _state.generate_limiter.allow():
+        raise HTTPException(
+            status_code=429,
+            detail="Generation rate limit reached — try again later",
+        )
     cfg = _state.generator_cfg
     if req is not None:
         overrides: dict[str, Any] = {}
@@ -354,10 +451,20 @@ def admin_generate(req: GenerateRequest | None = None) -> PuzzleResponse:
     except NoPuzzleFound as e:
         raise HTTPException(status_code=503, detail=str(e))
     pid = _state.state_store.save_puzzle(p)
+    # Bound state-store growth: once the pool exceeds the cap, drop the oldest
+    # puzzles nobody ever solved a word in. The daily pin, everything in
+    # history, and the newest `max_puzzles` survive — so played puzzles are
+    # never lost, only abandoned drive-by generations.
+    if _state.max_puzzles > 0 and _state.state_store.count_puzzles() > _state.max_puzzles:
+        _state.state_store.prune_puzzles(keep_recent=_state.max_puzzles)
     return _puzzle_to_response(pid, p)
 
 
-@api.post("/admin/daily/{puzzle_id}", response_model=PuzzleResponse)
+@api.post(
+    "/admin/daily/{puzzle_id}",
+    response_model=PuzzleResponse,
+    dependencies=[Depends(_require_admin)],
+)
 def admin_set_daily(puzzle_id: int) -> PuzzleResponse:
     """Pin an existing puzzle as the daily/featured default for new visitors."""
     pair = _state.state_store.get_puzzle(puzzle_id)

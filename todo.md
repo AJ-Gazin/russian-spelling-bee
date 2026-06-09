@@ -55,8 +55,28 @@ A reasonable approach for new fold proposals: pick a rule that fits the three-gu
 
 - [x] **Constructible forms in the answer key.** Inflected form *strings* stored per lemma (`lemmas.forms`, schema v4; `form_masks` derived from them at load). Generator records each lemma's hive-constructible forms on `ScoredLemma.forms`; API returns them; `AnswersModal.svelte` lists them under each headword so a player learns the typeable form (`сеть`→`сети`, `линь`→`линя`, `лисёнок`→`лисят`) instead of an untypeable citation form.
 - [x] **Homonym cycling (Task 3).** `Lemmatizer.resolve(form, valid, found=)` collects all in-set lemmas a homographic string reaches (`Resolution.reachable`) and returns the first not-yet-found, so re-entering the string walks through each homonym (`линял`→`линять`/`линялый`). Guess response carries `pos` + `homonym_remaining`; the UI refills the input and prompts "enter again" with a POS chip. `already_found` is now decided server-side (all reachable found).
-- [ ] **Pangram findability / homonym-safety (Task 2 — needs a solution).** The advertised pangram must always be typeable *and* credit the pangram lemma rather than a homonym, while keeping pangram variety as wide as possible. Today pangram detection uses `Lemma.mask` (the citation form) in `generator._score_lemmas`, which guarantees neither. Solution TBD.
+- [ ] **Pangram bonus integrity / homonym-safety (Task 2 — proposal pending decision).** *Findability is now solved:* hive/center enforcement on guesses means the flagged pangram's citation form (which uses all 7 letters by definition) is always typeable. What remains is that the +7 attaches to the *lemma*, so today a player earns it by typing any short inflection — "used all 7 letters" rewarded without ever doing so.
+
+  **Proposed approach (not yet implemented):** make the +7 a separately earnable *pangram claim*, awarded when the typed form itself covers all 7 hive letters AND resolves to the flagged pangram lemma.
+  - `ScoredLemma.points` becomes base-only; the API/puzzle payload keeps `is_pangram` so the client computes score = Σ base(found) + 7 × |pangrams claimed|.
+  - Client tracks `pangram_claimed: lemma[]` next to `found` (localStorage + sent with guesses, same trust model); response gains `pangram_awarded: bool`.
+  - Re-entering the pangram form of an *already-found* pangram lemma awards the claim (a small carve-out from `already_found`), so Гений at 100% stays reachable regardless of find order.
+  - Homonym-safety falls out: cycling walks the typed pangram string to the pangram lemma eventually, and the claim triggers on the entry that resolves to it.
+  - Generator unchanged: detection stays citation-form (`Lemma.mask`).
+
+  *Simpler fallback considered:* award +7 only when the first accepting entry is itself a pangram (no new client state) — but a player who finds the lemma via a lesser form first silently forfeits the bonus, making 100% missable. Not recommended.
 - [x] **Dictionary hyperlinks on answers.** Each lemma in the answer key (`AnswersModal`) and the found-words list (`FoundList`) links to `ru.wiktionary.org/wiki/{lemma}`. Styled as invisible links (inherit text color, no underline) with a faint underline on hover — zero visual noise at rest. Opens in new tab.
+
+---
+
+## Scoring unit — lemma vs typed form (consideration; not scheduled)
+
+Lemma-level membership/scoring and form-level constructibility disagree at the seams. Recording the tension so it's a deliberate decision, not an accident:
+
+- **Points = `len(citation lemma)` while the player types a form.** Typing the 5-letter *лисят* earns 7 points for `лисёнок`; typing a long inflection of a 4-letter lemma earns 1 point. Score measures dictionary depth, not construction difficulty.
+- **The ≥4-letter gate applies to the lemma, not the form.** `лёд` is excluded from every puzzle even when *льдом* is a constructible 5-letter word — a player typing it gets "не в наборе", which feels arbitrary under the form-level philosophy the answer key teaches.
+
+Options when/if addressed: (a) keep lemma-length scoring and document it as a principle ("the unit of credit is the word, not the typing"); (b) score each lemma by its shortest (or longest) hive-constructible form — still deterministic per lemma, but re-anchored to what's typeable. Per-typed-form scoring would break credited-once totals and precomputed `total_points`; ruled out.
 
 ---
 
@@ -73,6 +93,12 @@ Design constraint: the signal should feel rewarding, not punitive — a player w
 ---
 
 ## Completed (current build)
+
+### Guess validation + abuse resistance (2026-06-09)
+- [x] **Hive/center enforcement on guesses (server-side).** `api._hive_rejection` checks the *typed form* — only hive letters, must contain the center — before any morphology. Closes the hole where form-level fitness admitted a lemma via one inflection but any other inflection (incl. a center-less citation form like *сеть* in an и-center puzzle) was accepted. Two new guess statuses: `outside_hive`, `missing_center`. Client mirrors the rule (`Input.svelte` blocks submit + names the reason); the server is the authority.
+- [x] **Admin token on daily re-pin.** `POST /api/admin/daily/{id}` requires `X-Admin-Token` matching `RSB_ADMIN_TOKEN` when that env var is set (set it as an HF Space secret); unset ⇒ open for local dev.
+- [x] **Bounded puzzle-pool growth.** `/admin/generate` stays open (the "Новая игра" button calls it) but is rate-limited globally (`RSB_GENERATE_PER_HOUR`, default 30, fixed window) and the pool is pruned past `RSB_MAX_PUZZLES` (default 200): puzzles in history, the daily pin, and the newest N always survive — only abandoned drive-by generations are dropped. Keeps Turso from ballooning.
+- [x] `scripts/sample_puzzles.py` unbroken after preset removal — now samples the single production config (compare vs the Эксперт row of historical runs).
 
 ### Scaffold
 - [x] Project skeleton (`backend/`, `frontend/`, `docs/`, root docs)
@@ -150,6 +176,7 @@ Everything below is **out of scope for the current build** but worth preserving 
 - [x] Decide deployment target — bundled Docker Space on Hugging Face (free CPU tier)
 - [x] Persist generated puzzles across restarts — Turso libsql via `state_store.py`
 - [x] One-command redeploy (`scripts/deploy_hf.sh`)
+- [x] Basic abuse resistance: admin token on daily re-pin, rate-limited generation, puzzle-pool pruning (see "Guess validation + abuse resistance" above). Real auth/accounts deferred until per-player puzzle saving lands.
 - [ ] Tighten `allow_origins` in `api.py` from `["*"]` to the Space's known origin
 - [-] Weekly puzzle pre-generation cron
 - [-] Light editorial pass workflow (review queued puzzles before they go live)
